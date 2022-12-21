@@ -13,4 +13,4 @@ jobs:
       - run: mirror-isabelle/bin/isabelle components -I
       - run: mirror-isabelle/bin/isabelle components -a
       - run: mirror-isabelle/bin/isabelle components -u .
-      - run: mirror-isabelle/bin/isabelle
+      - run: mirror-isabelle/bin/isabelle sessions
