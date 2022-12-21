@@ -1,0 +1,13 @@
+title=Isabelle Context Build
+module=$CONTEXT_BUILD_HOME/lib/context_build.jar
+requirements= \
+  env:ISABELLE_SCALA_JAR
+sources= \
+  src/build_scheduler.scala \
+  src/context_build.scala \
+  src/memory.scala \
+  src/remote_browser_info.scala \
+  src/remote_build_job.scala \
+  src/slurm.scala
+services= \
+  isabelle.Context_Build_Tool
