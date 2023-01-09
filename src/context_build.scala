@@ -501,6 +501,7 @@ object Context_Build {
       var list_files = false
       var no_build = false
       var options = Options.init(opts = build_options)
+      var strategy: Option[Slurm.Strategy] = None
       var verbose = false
       var exclude_sessions: List[String] = Nil
 
@@ -525,10 +526,16 @@ Usage: isabelle build [OPTIONS] [SESSIONS ...]
     -l           list session source files
     -n           no build -- test dependencies only
     -o OPTION    override Isabelle system OPTION (via NAME=VAL or NAME)
+    -s NAME      use named distribution strategy
     -v           verbose
     -x NAME      exclude session NAME and all descendants
 
-  Build and manage Isabelle sessions, depending on implicit settings:
+  Build and manage Isabelle sessions locally or in a distributed context
+  with one of the following distribution strategies:
+
+""" + Library.indent_lines(4, Slurm.show_strategies) + """
+
+  The build also depends on implicit settings:
 
 """ + Library.indent_lines(2,  Build_Log.Settings.show()) + "\n",
         "B:" -> (arg => base_sessions = base_sessions ::: List(arg)),
@@ -548,6 +555,7 @@ Usage: isabelle build [OPTIONS] [SESSIONS ...]
         "l" -> (_ => list_files = true),
         "n" -> (_ => no_build = true),
         "o:" -> (arg => options = options + arg),
+        "s:" -> (arg => strategy = Some(Slurm.the_strategy(arg))),
         "v" -> (_ => verbose = true),
         "x:" -> (arg => exclude_sessions = exclude_sessions ::: List(arg)))
 
@@ -564,14 +572,16 @@ Usage: isabelle build [OPTIONS] [SESSIONS ...]
         progress.echo(Build_Log.Settings.show() + "\n")
       }
 
-      // TODO: get from CLI
-      scheduler =
-        new Slurm_Scheduler(
-          Path.explode("/media/isabelle-cluster/isabelle"),
-          Path.explode("/media/isabelle-cluster"),
-          List("adlerlake_ls21"),
-          Slurm.Store.open_db,
-          Slurm.known_strategies.head)
+      strategy.foreach { strategy =>
+        // TODO: get from CLI
+        scheduler =
+          new Slurm_Scheduler(
+            Path.explode("/media/isabelle-cluster/isabelle"),
+            Path.explode("/media/isabelle-cluster"),
+            List("adlerlake_ls21", "skylake_lrzxlarge"),
+            Slurm.Store.open_db,
+            strategy)
+      }
 
       val results =
         progress.interrupt_handler {
