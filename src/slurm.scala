@@ -175,8 +175,8 @@ object Slurm {
             "--ntasks=1" ::
             ("--cpus-per-task=" + config.threads) ::
             ("--mem=" + config.memory.kib.toInt + "K") ::
-            ("--export=USER_HOME=" + Bash.string(worker_home.implode_symbolic)) ::
-            ("--chdir=" + Bash.string(worker_isabelle.implode_symbolic)) ::
+            ("--export=USER_HOME=" + Bash.string(File.symbolic_path(worker_home))) ::
+            ("--chdir=" + Bash.string(File.symbolic_path(worker_isabelle))) ::
             config.partition.map(p => List("--partition=" + p)).getOrElse(Nil)
 
         val cmd = "srun" :: sopts ::: isabelle :: isabelle_command
@@ -204,7 +204,7 @@ object Slurm {
     ) extends Slurm_Job[(Process_Result, Option[String])](config, "build/" + session_name) {
       lazy val info = job.session_background.sessions_structure(session_name)
       lazy val dirs =
-        info.dirs.filter(Sessions.is_session_dir).map(_.implode_symbolic)
+        info.dirs.filter(Sessions.is_session_dir).map(File.symbolic_path(_))
 
       lazy val isabelle_command: List[String] =
         "build_job" ::
@@ -241,7 +241,7 @@ object Slurm {
       config: Config,
     ) extends Slurm_Job[Process_Result](config, "present/" + session_name) {
       lazy val isabelle_command: List[String] =
-        List("presentation", "-P " + Bash.string(job.root_dir.implode_symbolic), session_name)
+        List("presentation", "-P " + Bash.string(File.symbolic_path(job.root_dir)), session_name)
 
       def get_result(res: Process_Result): Process_Result = res
     }

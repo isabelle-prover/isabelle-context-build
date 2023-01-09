@@ -11,7 +11,7 @@ object Remote_Build_Job {
 
     def prop(prop: Properties.T): JSON.T = prop.map(t => tuple(t._1, t._2))
 
-    def path(path: Path): JSON.T = path.implode_symbolic
+    def path(path: Path): JSON.T = File.symbolic_path(path)
 
     def options_declare(opt: Options.Opt): JSON.T =
       JSON.Object(

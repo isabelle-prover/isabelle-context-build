@@ -274,8 +274,10 @@ object Context_Build {
             else File.write(store.output_log(session_name), terminate_lines(log_lines))
 
             // write database
+            val sources = Sessions.Sources.load(build_deps.background(session_name).base,
+              cache = store.cache.compress)
             using(store.open_database(session_name, output = true))(db =>
-              store.write_session_info(db, session_name,
+              store.write_session_info(db, session_name, sources,
                 build_log =
                   if (process_result.timeout) build_log.error("Timeout") else build_log,
                 build =
