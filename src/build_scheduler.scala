@@ -76,7 +76,7 @@ object Build_Scheduler {
 
   /* execution context */
 
-  abstract class Context(build: Build, progress: Progress) {
+  abstract class Context(build: Build, progress: Progress) extends AutoCloseable {
     type Config
 
     abstract class Execution[A] protected[Context](val config: Config) {
@@ -204,5 +204,7 @@ object Build_Scheduler {
       case build_job: Build_Job => new Build(session_name, build_job, config)
       case present_job: Present_Job => new Presentation(present_job)
     }
+
+    def close(): Unit = ()
   }
 }

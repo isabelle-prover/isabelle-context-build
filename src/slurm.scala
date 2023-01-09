@@ -251,6 +251,20 @@ object Slurm {
         case build_job: Build_Job => new Slurm_Build(session_name, build_job, config)
         case present_job: Present_Job => new Slurm_Presentation(session_name, present_job, config)
       }
+
+    def close(): Unit = {
+      val res = Isabelle_System.bash("squeue --json --jobs=" + Bash.string(build_id))
+      val jobs =
+        for {
+          obj <- JSON.Object.unapply(JSON.parse(res.out))
+          jobs <- JSON.list(
+            obj, "jobs", json => for {
+              obj <- JSON.Object.unapply(json)
+              id <- JSON.int(obj, "job_id")
+            } yield id)
+        } yield jobs
+      jobs.foreach(id => Isabelle_System.bash("scancel " + Bash.string(id.toString())))
+    }
   }
 
   case class Config(partition: Option[String], threads: Int, memory: Memory)
