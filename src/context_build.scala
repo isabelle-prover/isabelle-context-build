@@ -186,10 +186,9 @@ object Context_Build {
       } yield name
 
     val presentation_dir = browser_info.presentation_dir(store).absolute
+    val presentation_context0 =
+      Browser_Info.context(build_deps.sessions_structure, root_dir = presentation_dir)
     if (presentation_sessions.nonEmpty) {
-      val presentation_context0 =
-        Browser_Info.context(build_deps.sessions_structure, root_dir = presentation_dir)
-
       presentation_context0.update_root()
     }
 
@@ -313,6 +312,9 @@ object Context_Build {
                   process_result.err_lines.foreach(progress.echo)
                   val results1 =
                     if (process_result.ok) {
+                      val session_description =
+                        build_deps.sessions_structure(session_name).description
+                      presentation_context0.update_chapter(session_name, session_description)
                       progress.echo(
                         "Finished presenting " + session_name + " in " + presentation_dir)
                       results
