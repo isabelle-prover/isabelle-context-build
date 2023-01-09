@@ -35,7 +35,7 @@ object Slurm {
   ) extends Context(build, progress) {
     type Config = Slurm.Config
 
-    val build_id = build.start.format(Date.Format("YYYY-mm-dd_hh-mm-ss_SSS"))
+    val build_id = build.start.format(Date.Format("YYYY-MM-dd_HH-mm-ss_SSS"))
 
     def median[A](xs: List[A], default: A)(implicit ordering: Ordering[A]): A =
       if (xs.isEmpty) default
