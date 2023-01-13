@@ -497,10 +497,12 @@ object Context_Build {
       var export_files = false
       var fresh_build = false
       var session_groups: List[String] = Nil
+      var cluster_dirs: List[Path] = Nil
       var check_keywords: Set[String] = Set.empty
       var list_files = false
       var no_build = false
       var options = Options.init(opts = build_options)
+      var partitions: List[String] = Nil
       var strategy: Option[Slurm.Strategy] = None
       var verbose = false
       var exclude_sessions: List[String] = Nil
@@ -522,10 +524,12 @@ Usage: isabelle build [OPTIONS] [SESSIONS ...]
     -e           export files from session specification into file-system
     -f           fresh build
     -g NAME      select session group NAME
+    -h DIRS      cluster directories (user_home:isabelle_home)
     -k KEYWORD   check theory sources for conflicts with proposed keywords
     -l           list session source files
     -n           no build -- test dependencies only
     -o OPTION    override Isabelle system OPTION (via NAME=VAL or NAME)
+    -p NAMES     cluster partitions
     -s NAME      use named distribution strategy
     -v           verbose
     -x NAME      exclude session NAME and all descendants
@@ -551,10 +555,12 @@ Usage: isabelle build [OPTIONS] [SESSIONS ...]
         "e" -> (_ => export_files = true),
         "f" -> (_ => fresh_build = true),
         "g:" -> (arg => session_groups = session_groups ::: List(arg)),
+        "h:" -> (arg => cluster_dirs = Library.distinct(space_explode(',', arg)).map(Path.explode)),
         "k:" -> (arg => check_keywords = check_keywords + arg),
         "l" -> (_ => list_files = true),
         "n" -> (_ => no_build = true),
         "o:" -> (arg => options = options + arg),
+        "p:" -> (arg => partitions = Library.distinct(space_explode(',', arg))),
         "s:" -> (arg => strategy = Some(Slurm.the_strategy(arg))),
         "v" -> (_ => verbose = true),
         "x:" -> (arg => exclude_sessions = exclude_sessions ::: List(arg)))
@@ -573,14 +579,12 @@ Usage: isabelle build [OPTIONS] [SESSIONS ...]
       }
 
       strategy.foreach { strategy =>
-        // TODO: get from CLI
+        val (user_home, isabelle_home) = cluster_dirs match {
+          case user_home :: isabelle_home :: Nil => (user_home, isabelle_home)
+          case _ => getopts.usage()
+        }
         scheduler =
-          new Slurm_Scheduler(
-            Path.explode("/media/isabelle-cluster/isabelle"),
-            Path.explode("/media/isabelle-cluster"),
-            List("adlerlake_ls21", "skylake_lrzxlarge"),
-            Slurm.Store.open_db,
-            strategy)
+          new Slurm_Scheduler(isabelle_home, user_home, partitions, Slurm.Store.open_db, strategy)
       }
 
       val results =
