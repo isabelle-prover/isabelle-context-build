@@ -555,7 +555,7 @@ Usage: isabelle build [OPTIONS] [SESSIONS ...]
         "e" -> (_ => export_files = true),
         "f" -> (_ => fresh_build = true),
         "g:" -> (arg => session_groups = session_groups ::: List(arg)),
-        "h:" -> (arg => cluster_dirs = Library.distinct(space_explode(',', arg)).map(Path.explode)),
+        "h:" -> (arg => cluster_dirs = space_explode(':', arg).map(Path.explode)),
         "k:" -> (arg => check_keywords = check_keywords + arg),
         "l" -> (_ => list_files = true),
         "n" -> (_ => no_build = true),
