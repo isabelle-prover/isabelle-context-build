@@ -508,7 +508,7 @@ object Context_Build {
       var exclude_sessions: List[String] = Nil
 
       val getopts = Getopts("""
-Usage: isabelle build [OPTIONS] [SESSIONS ...]
+Usage: isabelle contex_build [OPTIONS] [SESSIONS ...]
 
   Options are:
     -B NAME      include session NAME and all descendants
