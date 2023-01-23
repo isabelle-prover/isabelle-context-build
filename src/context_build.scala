@@ -571,12 +571,10 @@ Usage: isabelle contex_build [OPTIONS] [SESSIONS ...]
 
       val start_date = Date.now()
 
-      if (verbose) {
+      if (verbose)
         progress.echo(
           "Started at " + Build_Log.print_date(start_date) +
             " (" + Isabelle_System.getenv("ML_IDENTIFIER") + " on " + Isabelle_System.hostname() +")")
-        progress.echo(Build_Log.Settings.show() + "\n")
-      }
 
       strategy.foreach { strategy =>
         val (user_home, isabelle_home) = cluster_dirs match {
