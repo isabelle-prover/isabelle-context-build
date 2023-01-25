@@ -135,8 +135,8 @@ object Slurm {
     /* execution on slurm cluster */
 
     def list_nodes: List[Config] = {
-      val res =
-        Isabelle_System.bash("sinfo --partition=" + partitions0.mkString(",") + " --json")
+      val res = Isabelle_System.bash(
+        "sinfo " + Bash.string("--partition=" + partitions0.mkString(",")) + " --json")
       if (!res.ok) error("Could not get cluster state: " + res)
 
       val nodes =
@@ -176,21 +176,21 @@ object Slurm {
             "--ntasks=1" ::
             ("--cpus-per-task=" + config.threads) ::
             ("--mem=" + config.memory.kib.toInt + "K") ::
-            ("--export=USER_HOME=" + Bash.string(File.symbolic_path(worker_home))) ::
-            ("--chdir=" + Bash.string(File.symbolic_path(worker_isabelle))) ::
+            ("--export=USER_HOME=" + File.symbolic_path(worker_home)) ::
+            ("--chdir=" + File.symbolic_path(worker_isabelle)) ::
             config.partition.map(p => List("--partition=" + p)).getOrElse(Nil)
 
-        val cmd = "srun" :: sopts ::: isabelle :: isabelle_command
+        val cmd = "srun" :: sopts ::: isabelle.implode :: isabelle_command
 
         Future.thread("distributed_build", uninterruptible = true) {
-          val res = Isabelle_System.bash(cmd.mkString(" "))
+          val res = Isabelle_System.bash(Bash.strings(cmd))
           if (terminated) res.copy(rc = Process_Result.RC.interrupt) else res
         }
       }
 
       def terminate(): Unit = {
         terminated = true
-        Isabelle_System.bash("scancel --name=" + id)
+        Isabelle_System.bash("scancel " + Bash.string("--name=" + id))
       }
 
       def is_finished: Boolean = future_result.is_finished
@@ -254,7 +254,7 @@ object Slurm {
       }
 
     def close(): Unit = {
-      val res = Isabelle_System.bash("squeue --json --jobs=" + Bash.string(build_id))
+      val res = Isabelle_System.bash("squeue --json " + Bash.string("--jobs=" + build_id)).check
       val jobs =
         for {
           obj <- JSON.Object.unapply(JSON.parse(res.out))
@@ -264,7 +264,7 @@ object Slurm {
               id <- JSON.int(obj, "job_id")
             } yield id)
         } yield jobs
-      jobs.foreach(id => Isabelle_System.bash("scancel " + Bash.string(id.toString())))
+      jobs.foreach(id => Isabelle_System.bash("scancel " + Bash.string(id.toString())).check)
     }
   }
 
