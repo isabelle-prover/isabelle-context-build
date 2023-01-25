@@ -1,3 +1,9 @@
+/* Title: remote_build_job.scala
+   Author: Fabian Huch, TU Muenchen
+
+Command-line interface to execute build job on a remote Isabelle process.
+ */
+
 package isabelle
 
 

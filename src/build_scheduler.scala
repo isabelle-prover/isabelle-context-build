@@ -1,3 +1,10 @@
+/* Title:    build_scheduler.scala
+   Author:   Fabian Huch, TU Muenchen
+
+Abstract scheduler module for individual build and presentation jobs, with implementation for simple
+local context.
+ */
+
 package isabelle
 
 

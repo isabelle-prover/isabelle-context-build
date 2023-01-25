@@ -3,10 +3,11 @@
 
 Slurm scheduling and execution context for Isabelle build.
 */
+
 package isabelle
 
 
-import isabelle.Build_Scheduler.*
+import isabelle.Build_Scheduler.{Build, Build_Job, Context, Job, Present_Job, Scheduler}
 import isabelle.Remote_Build_Job.{Decode, Encode, build_job}
 
 

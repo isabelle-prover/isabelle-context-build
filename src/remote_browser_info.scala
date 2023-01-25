@@ -1,7 +1,13 @@
+/* Title: remote_browser_info.scala
+   Author: Fabian Huch, TU Muenchen
+
+Command-line interface to build browser info on a remote Isabelle process.
+ */
+
 package isabelle
 
 
-import Browser_Info.*
+import Browser_Info.{Meta_Data, Node_Context}
 
 
 object Remote_Browser_Info {
@@ -49,7 +55,7 @@ object Remote_Browser_Info {
         val session = context.document_info.the_session(session_name)
 
         Bytes.write(
-          session_dir + session_graph_path,
+          session_dir + Browser_Info.session_graph_path,
           graphview.Graph_File.make_pdf(
             session_info.options,
             session_context.session_base.session_graph_display))
@@ -62,9 +68,9 @@ object Remote_Browser_Info {
           }
           yield {
             val doc_path = session_dir + doc.path.pdf
-            if (Path.eq_case_insensitive(doc.path.pdf, session_graph_path)) {
+            if (Path.eq_case_insensitive(doc.path.pdf, Browser_Info.session_graph_path)) {
               error("Illegal document variant " + quote(doc.name) +
-                " (conflict with " + session_graph_path + ")")
+                " (conflict with " + Browser_Info.session_graph_path + ")")
             }
             if (verbose) progress.echo("Presenting document " + session_name + "/" + doc.name)
             if (session_info.document_echo) progress.echo("Document at " + doc_path)
@@ -73,7 +79,7 @@ object Remote_Browser_Info {
           }
 
         val document_links = {
-          val link1 = HTML.link(session_graph_path, HTML.text("theory dependencies"))
+          val link1 = HTML.link(Browser_Info.session_graph_path, HTML.text("theory dependencies"))
           val links2 = document_variants.map(doc => HTML.link(doc.path.pdf, HTML.text(doc.name)))
           Library.separate(
             HTML.break ::: HTML.nl,
