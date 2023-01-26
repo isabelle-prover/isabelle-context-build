@@ -264,7 +264,7 @@ object Slurm {
               id <- JSON.int(obj, "job_id")
             } yield id)
         } yield jobs
-      jobs.foreach(id => Isabelle_System.bash("scancel " + Bash.string(id.toString())).check)
+      jobs.foreach(_.foreach(id => Isabelle_System.bash("scancel " + Bash.string(id.toString)).check))
     }
   }
 
