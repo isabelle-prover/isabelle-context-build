@@ -83,7 +83,7 @@ object Slurm {
     ): Option[(String, Config)] = {
       val threads = num_threads(session_name)
       cpus.find(_._2 >= threads).map(_._1).map(p => session_name ->
-        Config(Some(p), threads, Memory.gib(8)))
+        Config(Some(p), threads, Memory.GiB(8)))
     }
 
     def available_cpus(state: State): Map[String, Int] = {
@@ -127,7 +127,7 @@ object Slurm {
             }
           }
         partitions.find(free(_) > 0).map(partition =>
-          session_name -> Config(Some(partition), 1, Memory.gib(4)))
+          session_name -> Config(Some(partition), 1, Memory.GiB(4)))
       }
     }
 
@@ -149,7 +149,7 @@ object Slurm {
               memory <- JSON.int(obj, "real_memory")
               partitions <- JSON.strings(obj, "partitions")
               partition <- partitions.headOption
-            } yield Config(Some(partition), cpus, Memory.kib(memory)))
+            } yield Config(Some(partition), cpus, Memory.KiB(memory)))
         } yield nodes
 
       nodes match {
@@ -175,7 +175,7 @@ object Slurm {
             "--nodes=1" ::
             "--ntasks=1" ::
             ("--cpus-per-task=" + config.threads) ::
-            ("--mem=" + config.memory.kib.toInt + "K") ::
+            ("--mem=" + config.memory.KiB.toInt + "K") ::
             ("--export=USER_HOME=" + Bash.string(File.symbolic_path(worker_home))) ::
             ("--chdir=" + Bash.string(File.symbolic_path(worker_isabelle))) ::
             config.partition.map(p => List("--partition=" + Bash.string(p))).getOrElse(Nil)
