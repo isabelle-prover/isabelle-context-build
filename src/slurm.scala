@@ -161,7 +161,7 @@ object Slurm {
             ("--chdir=" + Bash.string(File.symbolic_path(worker_isabelle))) ::
             config.partition.map(p => List("--partition=" + Bash.string(p))).getOrElse(Nil)
 
-        val cmd = "srun" :: sopts ::: Bash.string(isabelle.implode) :: isabelle_command
+        val cmd = "srun" :: sopts ::: isabelle.toString :: isabelle_command
 
         Future.thread("distributed_build", uninterruptible = true) {
           val res = Isabelle_System.bash(cmd.mkString(" "))
