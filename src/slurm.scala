@@ -144,7 +144,7 @@ object Slurm {
       config: Config,
     ) extends Job(task, config) {
 
-      val id = build_id + "/" + task.name
+      val id = build_id + "/" + task.name.replace('|', '/')
       private var terminated = false
 
       lazy val isabelle_command: List[String]
