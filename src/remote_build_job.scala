@@ -9,7 +9,6 @@ package isabelle
 
 object Remote_Build_Job {
   object Encode {
-    def tuple(_1: JSON.T, _2: JSON.T): JSON.T = JSON.Object("_1" -> _1, "_2" -> _2)
     def option(opt: Option[JSON.T]): JSON.T = opt.orNull
 
     def time(time: Time): JSON.T = time.ms
@@ -46,7 +45,6 @@ object Remote_Build_Job {
         case _ => err(json, "not a string")
       }
 
-    def tuple2(json: JSON.T): (JSON.T, JSON.T) = (field(json, "_1"), field(json, "_2"))
     def option(opt: JSON.T): Option[JSON.T] = Option(opt)
     def list(json: JSON.T): List[JSON.T] =
       json match {
@@ -142,11 +140,11 @@ Usage: isabelle build_job [OPTIONS] SESSION
           case _ => getopts.usage()
         }
 
-      val (res, heap_digest) =
+      val (res, _) =
         build_job(session_name = session_name, options = options, dirs = dirs,
           do_store = build_heap, numa_node = numa_node)
 
-      val res_json = Encode.tuple(Encode.process_result(res), Encode.option(heap_digest))
+      val res_json = Encode.process_result(res)
 
       val progress = new Console_Progress()
       progress.echo(JSON.Format(res_json))
