@@ -390,8 +390,9 @@ object Context_Build {
                           store.init_session_info(_, session_name))
 
                         val job =
-                          Build_Scheduler.Build_Job(build_deps.background(session_name), store,
-                            do_store, log, command_timings0(session_name))
+                          Build_Scheduler.Build_Task(session_name,
+                            build_deps.background(session_name), store, do_store, log,
+                            command_timings0(session_name))
                         loop(state.copy(
                           running_builds = state.running_builds +
                             (session_name ->
@@ -415,8 +416,8 @@ object Context_Build {
                         progress.echo("Presenting " + session_name)
 
                         val job =
-                          Build_Scheduler.Present_Job(presentation_dir, build_deps, session_name,
-                            store)
+                          Build_Scheduler.Present_Task(session_name, presentation_dir, build_deps,
+                            session_name, store)
                         loop(
                           state.copy(running_presentations =
                             state.running_presentations +

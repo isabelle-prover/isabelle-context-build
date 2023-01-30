@@ -62,23 +62,25 @@ object Build_Scheduler {
 
   /* job configs */
 
-  sealed abstract class Job[A]
+  sealed abstract class Task_Def[A](name: String)
 
-  case class Build_Job(
+  case class Build_Task(
+    session_name: String,
     session_background: Sessions.Background,
     store: Sessions.Store,
     do_store: Boolean,
     log: Logger,
     command_timings0: List[Properties.T]
-  ) extends Job[(Process_Result, Option[String])]
+  ) extends Task_Def[(Process_Result, Option[String])]("build|" + session_name)
 
-  case class Present_Job(
+  case class Present_Task(
+    session_name: String,
     root_dir: Path,
     deps: Sessions.Deps,
     session: String,
     store: Sessions.Store,
     verbose: Boolean = false
-  ) extends Job[Process_Result]
+  ) extends Task_Def[Process_Result]("present|" + session_name)
 
 
   /* execution context */
@@ -114,7 +116,7 @@ object Build_Scheduler {
 
     def schedule_build(state: State): Option[(String, Config)]
     def schedule_presentation(state: State): Option[(String, Config)]
-    def execute[A](session_name: String, config: Config, job: Job[A]): Execution[A]
+    def execute[A](session_name: String, config: Config, task: Task_Def[A]): Execution[A]
   }
 
   class Local_Context(
@@ -159,7 +161,7 @@ object Build_Scheduler {
         session.map(_ -> None)
       }
 
-    class Build private[Local_Context](session_name: String, job: Build_Job, config: Config)
+    class Build private[Local_Context](session_name: String, job: Build_Task, config: Config)
       extends Execution[(Process_Result, Option[String])](config) {
       private val build_job = new isabelle.Build_Job(
         progress, job.session_background, job.store, job.do_store, job.log, (_, _) => (),
@@ -170,7 +172,7 @@ object Build_Scheduler {
       def is_finished: Boolean = build_job.is_finished
     }
 
-    class Presentation private[Local_Context](present_job: Present_Job)
+    class Presentation private[Local_Context](present_job: Present_Task)
       extends Execution[Process_Result](None) {
       private var out = ""
       private var err = ""
@@ -207,9 +209,9 @@ object Build_Scheduler {
       def is_finished: Boolean = future_result.is_finished
     }
 
-    def execute[A](session_name: String, config: Config, job: Job[A]): Execution[A] = job match {
-      case build_job: Build_Job => new Build(session_name, build_job, config)
-      case present_job: Present_Job => new Presentation(present_job)
+    def execute[A](session_name: String, config: Config, job: Task_Def[A]): Execution[A] = job match {
+      case build_job: Build_Task => new Build(session_name, build_job, config)
+      case present_job: Present_Task => new Presentation(present_job)
     }
 
     def close(): Unit = ()

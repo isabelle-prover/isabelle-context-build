@@ -7,7 +7,7 @@ Slurm scheduling and execution context for Isabelle build.
 package isabelle
 
 
-import isabelle.Build_Scheduler.{Build, Build_Job, Context, Job, Present_Job, Scheduler}
+import isabelle.Build_Scheduler.{Build, Build_Task, Context, Task_Def, Present_Task, Scheduler}
 import isabelle.Remote_Build_Job.{Decode, Encode, build_job}
 
 
@@ -200,7 +200,7 @@ object Slurm {
 
     class Slurm_Build private[Slurm_Context](
       session_name: String,
-      job: Build_Job,
+      job: Build_Task,
       config: Config
     ) extends Slurm_Job[(Process_Result, Option[String])](config, "build/" + session_name) {
       lazy val info = job.session_background.sessions_structure(session_name)
@@ -238,7 +238,7 @@ object Slurm {
 
     class Slurm_Presentation(
       session_name: String,
-      job: Present_Job,
+      job: Present_Task,
       config: Config,
     ) extends Slurm_Job[Process_Result](config, "present/" + session_name) {
       lazy val isabelle_command: List[String] =
@@ -247,10 +247,10 @@ object Slurm {
       def get_result(res: Process_Result): Process_Result = res
     }
 
-    def execute[A](session_name: String, config: Config, job: Job[A]): Execution[A] =
+    def execute[A](session_name: String, config: Config, job: Task_Def[A]): Execution[A] =
       job match {
-        case build_job: Build_Job => new Slurm_Build(session_name, build_job, config)
-        case present_job: Present_Job => new Slurm_Presentation(session_name, present_job, config)
+        case build_job: Build_Task => new Slurm_Build(session_name, build_job, config)
+        case present_job: Present_Task => new Slurm_Presentation(session_name, present_job, config)
       }
 
     def close(): Unit = {
