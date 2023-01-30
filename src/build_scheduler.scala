@@ -60,9 +60,9 @@ object Build_Scheduler {
   }
 
 
-  /* job configs */
+  /* task descriptions */
 
-  sealed abstract class Task_Def[A](name: String)
+  sealed abstract class Task_Def(val name: String)
 
   case class Build_Task(
     session_name: String,
@@ -70,53 +70,91 @@ object Build_Scheduler {
     store: Sessions.Store,
     do_store: Boolean,
     log: Logger,
-    command_timings0: List[Properties.T]
-  ) extends Task_Def[(Process_Result, Option[String])]("build|" + session_name)
+    command_timings0: List[Properties.T],
+    input_heaps: List[String]
+  ) extends Task_Def("build|" + session_name) {
+    lazy val info: Sessions.Info = session_background.sessions_structure(session_name)
+  }
+
+  object Build_Task {
+    def task0(session_name: String): Build_Task =
+      Build_Task(session_name, Sessions.background0(session_name), Sessions.store(Options.init()),
+        false, Logger.make(None), Nil, Nil)
+  }
 
   case class Present_Task(
     session_name: String,
     root_dir: Path,
     deps: Sessions.Deps,
-    session: String,
     store: Sessions.Store,
     verbose: Boolean = false
-  ) extends Task_Def[Process_Result]("present|" + session_name)
+  ) extends Task_Def("presentation|" + session_name)
 
+  object Present_Task {
+    def task0(session_name: String): Present_Task =
+      Present_Task(session_name, Path.root, Sessions.deps(Sessions.Structure.empty),
+        Sessions.store(Options.init()))
+  }
 
   /* execution context */
 
   abstract class Context(build: Build, progress: Progress) extends AutoCloseable {
     type Config
 
-    abstract class Execution[A] protected[Context](val config: Config) {
+    abstract class Job protected[Context](val task: Task_Def, val config: Config) {
       def terminate(): Unit
       def is_finished: Boolean
-      def join: A
+      def join: Process_Result
     }
 
-    case class State(
-      pending: Graph[String, Sessions.Info],
-      presentation_sessions: List[String],
-      running_builds: Map[String, (List[String], Execution[(Process_Result, Option[String])])]
-        = Map.empty,
-      running_presentations: Map[String, Execution[Process_Result]] = Map.empty
+    class State private(
+      val pending: Graph[String, Task_Def],
+      val running: Map[String, Job]
     ) {
       override def equals(that: Any): Boolean =
         that match {
-          case s: State =>
-            pending == s.pending && presentation_sessions == s.presentation_sessions &&
-              running_builds.keys == s.running_builds.keys &&
-              running_presentations.keys == s.running_presentations.keys
+          case that: State =>
+            pending == that.pending && running.keys == that.running.keys
           case _ => false
         }
+      override def hashCode(): Int = (pending, running.keys).hashCode()
 
-      def running: List[Execution[_]] =
-        running_builds.values.map(_._2).toList ::: running_presentations.values.toList
+      def run(task: Task_Def, config: Config): State =
+        new State(pending, running + (task.name -> execute(task, config)))
+      def del(task: Task_Def): State =
+        new State(pending.del_node(task.name), running - task.name)
     }
 
-    def schedule_build(state: State): Option[(String, Config)]
-    def schedule_presentation(state: State): Option[(String, Config)]
-    def execute[A](session_name: String, config: Config, task: Task_Def[A]): Execution[A]
+    object State {
+      def init: State = {
+        val graph = build.structure.build_graph
+        val structure = build.deps.sessions_structure
+
+        val presentation_sessions =
+          for {
+            name <- structure.build_topological_order
+            info = graph.get_node(name)
+            if build.browser_info.enabled(info)
+          } yield name
+
+        val entries: Iterator[((String, Task_Def), List[String])] =
+          graph.keys_iterator.flatMap { session_name =>
+            val build_task = Build_Task.task0(session_name)
+            val deps = graph.imm_preds(session_name).toList.map(Build_Task.task0)
+            val presentation_node =
+              if (presentation_sessions.contains(session_name)) {
+                val present_task = Present_Task.task0(session_name)
+                Some((present_task.name, present_task), List(build_task.name))
+              } else None
+
+            ((build_task.name, build_task), deps.map(_.name)) :: presentation_node.toList
+          }
+        new State(Graph.make(entries.toList, converse = true), Map.empty)
+      }
+    }
+
+    def schedule(state: State): Option[(Task_Def, Config)]
+    def execute(task: Task_Def, config: Config): Job
   }
 
   class Local_Context(
@@ -140,40 +178,34 @@ object Build_Scheduler {
         }
     }
 
-    val sorted = SortedSet(build.structure.build_graph.keys: _*)(Ordering)
+    val sorted = SortedSet(build.structure.build_graph.keys: _*)(Ordering).toList
 
-    def schedule_build(state: State): Option[(String, Config)] =
-      if (state.running_builds.size + state.running_presentations.size >= max_jobs) None
+    def schedule(state: State): Option[(Task_Def, Option[Int])] =
+      if (state.running.size >= max_jobs) None
       else {
-        def used_node(i: Int): Boolean =
-          state.running_builds.iterator.exists(
-            { case (_, (_, exec)) => exec.config.contains(i) })
+        def used_node(i: Int): Boolean = state.running.iterator.exists(_._2.config.contains(i))
 
-        val next_build = state.pending.minimals.filterNot(state.running_builds.contains).toSet
-        sorted.find(next_build.contains).map(session_name => session_name -> numa.next(used_node))
+        val next = state.pending.minimals.filterNot(state.running.contains).toSet
+
+        for {
+          task <- sorted.map(Build_Task.task0).find(task => next.contains(task.name)) orElse
+            sorted.map(Present_Task.task0).find(task => next.contains(task.name))
+        } yield task -> numa.next(used_node)
       }
 
-    def schedule_presentation(state: State): Option[(String, Config)] =
-      if (state.running_builds.size + state.running_presentations.size >= max_jobs) None
-      else {
-        val session = state.presentation_sessions.find(session =>
-          !state.pending.keys.contains(session) && !state.running_presentations.contains(session))
-        session.map(_ -> None)
-      }
-
-    class Build private[Local_Context](session_name: String, job: Build_Task, config: Config)
-      extends Execution[(Process_Result, Option[String])](config) {
+    class Build_Job private[Local_Context](task: Build_Task, config: Config)
+      extends Job(task, config) {
       private val build_job = new isabelle.Build_Job(
-        progress, job.session_background, job.store, job.do_store, job.log, (_, _) => (),
-        config, job.command_timings0)
+        progress, task.session_background, task.store, task.do_store, task.log, (_, _) => (),
+        config, task.command_timings0)
 
-      def join: (Process_Result, Option[String]) = build_job.join
+      def join: Process_Result = build_job.join._1
       def terminate(): Unit = build_job.terminate()
       def is_finished: Boolean = build_job.is_finished
     }
 
-    class Presentation private[Local_Context](present_job: Present_Task)
-      extends Execution[Process_Result](None) {
+    class Present_Job private[Local_Context](task: Present_Task, config: Config)
+      extends Job(task, config) {
       private var out = ""
       private var err = ""
       private val progress = new Progress {
@@ -183,16 +215,16 @@ object Build_Scheduler {
       }
 
       private val future_result = Future.thread("present", uninterruptible = true) {
-        using(Export.open_database_context(present_job.store)) { database_context =>
+        using(Export.open_database_context(task.store)) { database_context =>
 
           val context1 =
-            Browser_Info.context(present_job.deps.sessions_structure,
-              root_dir = present_job.root_dir, document_info =
-                Document_Info.read(database_context, present_job.deps, List(present_job.session)))
+            Browser_Info.context(task.deps.sessions_structure,
+              root_dir = task.root_dir, document_info =
+                Document_Info.read(database_context, task.deps, List(task.session_name)))
 
-          using(database_context.open_session(present_job.deps.background(present_job.session)))(
+          using(database_context.open_session(task.deps.background(task.session_name)))(
             Browser_Info.build_session(context1, _, progress = progress,
-              verbose = present_job.verbose))
+              verbose = task.verbose))
         }
       }
 
@@ -209,9 +241,9 @@ object Build_Scheduler {
       def is_finished: Boolean = future_result.is_finished
     }
 
-    def execute[A](session_name: String, config: Config, job: Task_Def[A]): Execution[A] = job match {
-      case build_job: Build_Task => new Build(session_name, build_job, config)
-      case present_job: Present_Task => new Presentation(present_job)
+    def execute(task: Task_Def, config: Config): Job = task match {
+      case task: Build_Task => new Build_Job(task, config)
+      case task: Present_Task => new Present_Job(task, config)
     }
 
     def close(): Unit = ()

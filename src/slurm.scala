@@ -7,7 +7,7 @@ Slurm scheduling and execution context for Isabelle build.
 package isabelle
 
 
-import isabelle.Build_Scheduler.{Build, Build_Task, Context, Task_Def, Present_Task, Scheduler}
+import isabelle.Build_Scheduler.{Build, Build_Task, Context, Present_Task, Scheduler, Task_Def}
 import isabelle.Remote_Build_Job.{Decode, Encode, build_job}
 
 
@@ -46,12 +46,11 @@ object Slurm {
 
     /* distributed scheduling with partitions */
 
-    val session_threads = Store.best_threads(slurm_db)
+    val build_threads = Store.best_threads(slurm_db)
     val session_timings = Store.best_times(slurm_db)
     val median_time = median(session_timings.values.toList, Time.minutes(1))
 
-    def time(session_name: String): Time =
-      session_timings.getOrElse(session_name, median_time)
+    def time(name: String): Time = session_timings.getOrElse(name, median_time)
 
     val partition_sizes =
       compute_nodes.filter(_.partition.exists(partitions0.contains)).groupBy(_.partition.get).map {
@@ -67,32 +66,21 @@ object Slurm {
       build.structure.build_graph.all_preds(critical_maximals.keys.toList).toSet
     }
 
-    def threads_fast(session_name: String): Int =
-      session_threads.getOrElse(session_name, 8)
-
-    def threads_parallel(session_name: String): Int =
-      session_timings.get(session_name) match {
+    def threads_default(name: String) = if (name.startsWith("build")) 8 else 1
+    def threads_fast(name: String): Int = build_threads.getOrElse(name, threads_default(name))
+    def threads_parallel(name: String): Int =
+      session_timings.get(name) match {
         case Some(time) if time.seconds < 20.0 => 1
-        case Some(time) if time.seconds < 60.0 => 2
         case Some(time) if time.seconds < 240.0 => 4
-        case _ => 8
+        case _ => threads_default(name)
       }
 
-    def distribute(
-      session_name: String, num_threads: String => Int, cpus: List[(String, Int)]
-    ): Option[(String, Config)] = {
-      val threads = num_threads(session_name)
-      cpus.find(_._2 >= threads).map(_._1).map(p => session_name ->
-        Config(Some(p), threads, Memory.GiB(8)))
-    }
-
     def available_cpus(state: State): Map[String, Int] = {
-      val running_configs =
-        state.running_builds.values.map(_._2.config) ++
-          state.running_presentations.values.map(_.config)
-      partition_sizes.map { case (partition, cpus) =>
-        partition ->
-          (cpus - running_configs.filter(_.partition.contains(partition)).map(_.threads).sum)
+      partition_sizes.map {
+        case (partition, cpus) =>
+          val job_configs =
+            state.running.values.map(_.config).filter(_.partition.contains(partition))
+          partition -> (cpus - job_configs.map(_.threads).sum)
       }
     }
 
@@ -104,32 +92,24 @@ object Slurm {
           time(_).ms)
       val max_height = node_height.values.max
 
-      val paths = state.pending.minimals.filterNot(state.running_builds.contains).map(node =>
-        node -> node_height(node)).sortBy(_._2).reverse
+      val paths = state.pending.minimals.filterNot(state.running.contains).map(
+        node => node -> node_height(node)).sortBy(_._2).reverse
 
-      Strategy_Args(state.pending.keys, partitions.map(p => p -> cpus(p)), max_height, paths)
-    }
-
-    def schedule_build(state: State): Option[(String, Config)] =
-      strategy.apply(this, prepare(state))
-
-    def schedule_presentation(state: State): Option[(String, Config)] = {
-      val session = state.presentation_sessions.find(session =>
-        !state.pending.keys.contains(session) && !state.running_presentations.contains(session))
-      session.flatMap { session_name =>
-        val cpus = available_cpus(state)
-        val pending_builds = state.pending.keys.map(threads_fast)
-        val free =
-          pending_builds.foldLeft(cpus) {
-            case (cpus, threads) => partitions.find(cpus(_) >= threads) match {
-              case Some(partition) => cpus.updated(partition, cpus(partition) - threads)
-              case None => cpus.map(t => t._1 -> 0)
-            }
-          }
-        partitions.find(free(_) > 0).map(partition =>
-          session_name -> Config(Some(partition), 1, Memory.GiB(4)))
+      def distribute(
+        name: String, num_threads: String => Int, cpus: List[(String, Int)]
+      ): Option[(Task_Def, Config)] = {
+        val task = state.pending.get_node(name)
+        val threads = num_threads(name)
+        cpus.find(_._2 >= threads).map(_._1).map(p =>
+          task -> Config(Some(p), threads, Memory.GiB(8)))
       }
+
+      Strategy_Args(state.pending.keys, partitions.map(p => p -> cpus(p)), max_height, paths,
+        distribute)
     }
+
+    def schedule(state: State): Option[(Task_Def, Slurm.Config)] =
+      strategy.apply(this, prepare(state))
 
 
     /* execution on slurm cluster */
@@ -159,14 +139,15 @@ object Slurm {
       }
     }
 
-    abstract class Slurm_Job[A] private[Slurm_Context](config: Config, job_id: String)
-      extends Execution[A](config) {
-      val id = build_id + "/" + job_id
+    abstract class Slurm_Job private[Slurm_Context](
+      task: Task_Def,
+      config: Config,
+    ) extends Job(task, config) {
+
+      val id = build_id + "/" + task.name
       private var terminated = false
 
       lazy val isabelle_command: List[String]
-
-      def get_result(res: Process_Result): A
 
       private val future_result: Future[Process_Result] = {
         val isabelle = worker_isabelle + Path.explode("bin/isabelle")
@@ -188,69 +169,61 @@ object Slurm {
         }
       }
 
+      def is_finished: Boolean = future_result.is_finished
+      def join: Process_Result = future_result.join
       def terminate(): Unit = {
         terminated = true
         Isabelle_System.bash("scancel --name=" + Bash.string(id))
       }
-
-      def is_finished: Boolean = future_result.is_finished
-
-      def join: A = get_result(future_result.join)
     }
 
     class Slurm_Build private[Slurm_Context](
-      session_name: String,
-      job: Build_Task,
+      task: Build_Task,
       config: Config
-    ) extends Slurm_Job[(Process_Result, Option[String])](config, "build/" + session_name) {
-      lazy val info = job.session_background.sessions_structure(session_name)
+    ) extends Slurm_Job(task, config) {
+      lazy val info = task.info
       lazy val dirs =
         info.dirs.filter(Sessions.is_session_dir).map(File.symbolic_path)
 
       lazy val isabelle_command: List[String] =
         "build_job" ::
           ("-o threads=" + config.threads) ::
-          (if (job.do_store) List("-b") else Nil) :::
+          (if (task.do_store) List("-b") else Nil) :::
           dirs.map("-d " + Bash.string(_)) :::
-          session_name ::
+          task.session_name ::
           Nil
 
-      def get_result(res: Process_Result): (Process_Result, Option[String]) = {
+      def get_result(res: Process_Result): Process_Result = {
         val json = res.out_lines.mkString("\n")
         Exn.capture(JSON.parse(json, strict = false)) match {
           case Exn.Exn(_) =>
             error("Could not read remote build job response: " + quote(json) +
               ". Error log: " + res.err)
           case Exn.Res(json) =>
-            val (res1, digest) = Decode.tuple2(json)
-            val res2 = Decode.process_result(res1)
-            val digest1 = Decode.option(digest).map(Decode.string)
-            (res2.copy(timing = res2.timing.copy(elapsed = res.timing.elapsed)), digest1)
+            val res2 = Decode.process_result(json)
+            res2.copy(timing = res2.timing.copy(elapsed = res.timing.elapsed))
         }
       }
 
-      override def join: (Process_Result, Option[String]) = {
-        val (result, heap_digest) = super.join
-        Store.udpate(slurm_db, session_name, build_id, config, result.timing)
-        (result, heap_digest)
+      override def join: Process_Result = {
+        val result = get_result(super.join)
+        Store.udpate(slurm_db, task.name, build_id, config, result.timing)
+        result
       }
     }
 
     class Slurm_Presentation(
-      session_name: String,
-      job: Present_Task,
+      task: Present_Task,
       config: Config,
-    ) extends Slurm_Job[Process_Result](config, "present/" + session_name) {
+    ) extends Slurm_Job(task, config) {
       lazy val isabelle_command: List[String] =
-        List("presentation", "-P " + Bash.string(File.symbolic_path(job.root_dir)), session_name)
-
-      def get_result(res: Process_Result): Process_Result = res
+        List("presentation", "-P " + Bash.string(File.symbolic_path(task.root_dir)), task.session_name)
     }
 
-    def execute[A](session_name: String, config: Config, job: Task_Def[A]): Execution[A] =
-      job match {
-        case build_job: Build_Task => new Slurm_Build(session_name, build_job, config)
-        case present_job: Present_Task => new Slurm_Presentation(session_name, present_job, config)
+    def execute(task: Task_Def, config: Config): Job =
+      task match {
+        case task: Build_Task => new Slurm_Build(task, config)
+        case task: Present_Task => new Slurm_Presentation(task, config)
       }
 
     def close(): Unit = {
@@ -275,22 +248,22 @@ object Slurm {
   object Data {
     val database = Path.explode("$ISABELLE_HOME_USER/distributed_build.db")
 
-    val session_name = SQL.Column.string("session_name").make_primary_key
+    val name = SQL.Column.string("name").make_primary_key
     val build_id = SQL.Column.string("build_id").make_primary_key
     val partition = SQL.Column.string("partition")
     val time = SQL.Column.long("elapsed")
     val threads = SQL.Column.int("threads")
 
-    val columns = List(session_name, build_id, partition, time, threads)
+    val columns = List(name, build_id, partition, time, threads)
     val table = SQL.Table("distributed_build_log", columns)
 
     def where_equal(
-      session_name: String,
+      name: String,
       partition: Option[String] = None,
       threads: Option[Int] = None,
     ): SQL.Source =
-      "WHERE " + (Data.session_name.equal(session_name) ::
-        partition.map(_.toString).map(Data.partition.equal).toList :::
+      "WHERE " + (Data.name.equal(name) ::
+        partition.map(Data.partition.equal).toList :::
         threads.map(_.toString).map(Data.threads.equal).toList).mkString(" AND ")
   }
 
@@ -304,11 +277,11 @@ object Slurm {
     }
 
     def udpate(
-      db: SQL.Database, session_name: String, build_id: String, config: Config, timing: Timing
+      db: SQL.Database, name: String, build_id: String, config: Config, timing: Timing
     ): Unit =
       db.transaction {
         db.using_statement(Data.table.insert()) { stmt =>
-          stmt.string(1) = session_name
+          stmt.string(1) = name
           stmt.string(2) = build_id
           stmt.string(3) = config.partition.orNull
           stmt.long(4) = timing.elapsed.ms
@@ -317,10 +290,7 @@ object Slurm {
         }
 
         val where_equal =
-          Data.where_equal(
-            session_name,
-            partition = config.partition,
-            threads = Some(config.threads))
+          Data.where_equal(name, partition = config.partition, threads = Some(config.threads))
 
         val build_ids =
           db.using_statement(Data.table.select(List(Data.build_id), where_equal))(stmt =>
@@ -333,17 +303,16 @@ object Slurm {
       }
 
     def best_threads(db: SQL.Database): Map[String, Int] =
-      db.using_statement(Data.table
-        .select(List(Data.session_name, Data.threads, Data.time)))(stmt =>
+      db.using_statement(Data.table.select(List(Data.name, Data.threads, Data.time)))(stmt =>
         stmt.execute_query().iterator(r =>
-          r.string(Data.session_name) -> (r.long(Data.time) -> r.int(Data.threads))).toList
-          .groupBy(
-            _._1).map { case (s, ts) => s -> ts.map(_._2).minBy(_._1)._2 }
+          r.string(Data.name) ->
+            (r.long(Data.time) -> r.int(Data.threads))).toList.groupBy(_._1).map {
+          case (s, ts) => s -> ts.map(_._2).minBy(_._1)._2 }
       )
 
     def best_times(db: SQL.Database): Map[String, Time] =
-      db.using_statement(Data.table.select(List(Data.session_name, Data.time)))(stmt =>
-        stmt.execute_query().iterator(r => r.string(Data.session_name) -> r.long(Data.time)).
+      db.using_statement(Data.table.select(List(Data.name, Data.time)))(stmt =>
+        stmt.execute_query().iterator(r => r.string(Data.name) -> r.long(Data.time)).
           toList.groupBy(_._1).map { case (s, ts) => s -> Time.ms(ts.map(_._2).min) })
   }
 
@@ -354,13 +323,14 @@ object Slurm {
     running: List[String],
     partition_cpus: List[(String, Int)],
     max_height: Long,
-    paths: List[(String, Long)]
+    paths: List[(String, Long)],
+    distribute: (String, String => Int, List[(String, Int)]) => Option[(Task_Def, Config)] 
   )
 
   sealed case class Strategy(
     name: String,
     description: String,
-    apply: (Slurm_Context, Strategy_Args) => Option[(String, Config)]
+    apply: (Slurm_Context, Strategy_Args) => Option[(Task_Def, Config)]
   ) {
     override def toString: String = name
   }
@@ -375,11 +345,11 @@ object Slurm {
             val (long, short :: _) = args.paths.partition(_._2 * 2 > args.max_height)
 
             long match {
-              case Nil => sched.distribute(short._1, sched.threads_parallel, args.partition_cpus)
-              case long :: _ => sched.distribute(long._1, sched.threads_fast, args.partition_cpus)
+              case Nil => args.distribute(short._1, sched.threads_parallel, args.partition_cpus)
+              case long :: _ => args.distribute(long._1, sched.threads_fast, args.partition_cpus)
             }
           }
-          else sched.distribute(args.paths.head._1, sched.threads_parallel, args.partition_cpus)
+          else args.distribute(args.paths.head._1, sched.threads_parallel, args.partition_cpus)
         }),
       Strategy(
         "partition_prio", "builds long paths on fast partitions and short paths on slow",
@@ -389,26 +359,26 @@ object Slurm {
             val (long, short :: _) = args.paths.partition(_._2 * 2 > args.max_height)
             val (fast, slow) = args.partition_cpus.splitAt((args.partition_cpus.length + 1) / 2)
 
-            long.headOption.flatMap(s => sched.distribute(s._1, sched.threads_fast, fast)) orElse
-              sched.distribute(short._1, sched.threads_parallel, slow)
+            long.headOption.flatMap(s => args.distribute(s._1, sched.threads_fast, fast)) orElse
+              args.distribute(short._1, sched.threads_parallel, slow)
           }
-          else sched.distribute(args.paths.head._1, sched.threads_parallel, args.partition_cpus)
+          else args.distribute(args.paths.head._1, sched.threads_parallel, args.partition_cpus)
         }),
       Strategy(
         "absolute_prio", "builds paths >30m prioritized, except if <8 sessions are ready",
         { (sched, args) =>
           if (args.paths.isEmpty) None
           else if (args.paths.length + args.running.length < 8)
-            sched.distribute(args.paths.head._1, sched.threads_fast, args.partition_cpus)
+            args.distribute(args.paths.head._1, sched.threads_fast, args.partition_cpus)
           else {
             val (critical, normal) = args.paths.map(_._1).partition(sched.critical_nodes.contains)
 
             critical match {
               case Nil =>
                 normal.headOption.flatMap(
-                  sched.distribute(_, sched.threads_parallel, args.partition_cpus))
+                  args.distribute(_, sched.threads_parallel, args.partition_cpus))
               case critical :: _ =>
-                sched.distribute(critical, sched.threads_fast, args.partition_cpus)
+                args.distribute(critical, sched.threads_fast, args.partition_cpus)
             }
           }
         })

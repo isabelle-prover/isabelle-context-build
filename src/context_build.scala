@@ -8,7 +8,7 @@ package isabelle
 
 
 import Remote_Build_Job.{Decode, Encode}
-import Build_Scheduler.{Local_Scheduler, Scheduler}
+import Build_Scheduler.{Build_Task, Local_Scheduler, Present_Task, Scheduler}
 import Slurm.Slurm_Scheduler
 
 import scala.collection.immutable.SortedSet
@@ -179,19 +179,10 @@ object Context_Build {
 
     /* prepare presentation */
 
-    val presentation_sessions =
-      for {
-        name <- build_deps.sessions_structure.build_topological_order
-        info = build_deps.sessions_structure.build_graph.get_node(name)
-        if browser_info.enabled(info)
-      } yield name
-
     val presentation_dir = browser_info.presentation_dir(store).absolute
     val presentation_context0 =
       Browser_Info.context(build_deps.sessions_structure, root_dir = presentation_dir)
-    if (presentation_sessions.nonEmpty) {
-      presentation_context0.update_root()
-    }
+    if (browser_info.enabled) { presentation_context0.update_root() }
 
 
     /* main build process */
@@ -200,7 +191,7 @@ object Context_Build {
       Build_Scheduler.Build(start_date, store, build_deps.sessions_structure, build_deps,
         browser_info, progress)
     using(scheduler.open_build_context(build)) { ctx =>
-      val state = ctx.State(build_deps.sessions_structure.build_graph, presentation_sessions)
+      val state = ctx.State.init
 
       store.prepare_output_dir()
 
@@ -241,197 +232,176 @@ object Context_Build {
         }
 
       @tailrec def loop(state: ctx.State, results: Map[String, Result]): Map[String, Result] =
-        if (state.pending.is_empty && state.presentation_sessions.isEmpty) results
+        if (state.pending.is_empty) results
         else {
-          if (progress.stopped) state.running.foreach(_.terminate())
+          if (progress.stopped) state.running.values.foreach(_.terminate())
 
-          state.running_builds.find({ case (_, (_, exec)) => exec.is_finished }) match {
-            case Some((session_name, (input_heaps, exec))) =>
-              //{{{ finish build job
+          state.running.values.find(_.is_finished) match {
+            case Some(job) =>
+              //{{{ finish job
+              val results1 = job.task match {
+                case build: Build_Task =>
+                  val session_name = build.session_name
+                  val process_result = job.join
+                  val heap_digest = store.find_heap_digest(session_name)
 
-              val info = state.pending.get_node(session_name)
-              val (process_result, heap_digest) = exec.join
+                  val log_lines = process_result.out_lines.filterNot(Protocol_Message.Marker.test)
+                  val process_result_tail = {
+                    val tail = build.info.options.int("process_output_tail")
+                    process_result.copy(
+                      out_lines =
+                        "(see also " + store.output_log(session_name).file.toString + ")" ::
+                        (if (tail == 0) log_lines else log_lines.drop(log_lines.length - tail max 0)))
+                  }
 
-              val log_lines = process_result.out_lines.filterNot(Protocol_Message.Marker.test)
-              val process_result_tail = {
-                val tail = info.options.int("process_output_tail")
-                process_result.copy(
-                  out_lines =
-                    "(see also " + store.output_log(session_name).file.toString + ")" ::
-                    (if (tail == 0) log_lines else log_lines.drop(log_lines.length - tail max 0)))
+                  val build_log =
+                    Build_Log.Log_File(session_name, process_result.out_lines).
+                      parse_session_info(
+                        command_timings = true,
+                        theory_timings = true,
+                        ml_statistics = true,
+                        task_statistics = true)
+
+                  // write log file
+                  if (process_result.ok) {
+                    File.write_gzip(store.output_log_gz(session_name), terminate_lines(log_lines))
+                  }
+                  else File.write(store.output_log(session_name), terminate_lines(log_lines))
+
+                  // write database
+                  val sources = Sessions.Sources.load(build_deps.background(session_name).base,
+                    cache = store.cache.compress)
+                  using(store.open_database(session_name, output = true))(db =>
+                    store.write_session_info(db, session_name, sources,
+                      build_log =
+                        if (process_result.timeout) build_log.error("Timeout") else build_log,
+                      build =
+                        Build.Session_Info(sources_stamp(build_deps, session_name),
+                          build.input_heaps, heap_digest, process_result.rc,
+                          UUID.random().toString)))
+
+                  // messages
+                  process_result.err_lines.foreach(progress.echo)
+
+                  if (process_result.ok) {
+                    if (verbose) progress.echo(session_timing(session_name, build_log))
+                    progress.echo(session_finished(session_name, process_result))
+                  }
+                  else {
+                    progress.echo(session_name + " FAILED")
+                    if (!process_result.interrupted) progress.echo(process_result_tail.out)
+                  }
+                  results + (session_name ->
+                    Result(false, heap_digest, Some(process_result_tail), build.info))
+
+                case presentation: Present_Task =>
+                  val session_name = presentation.session_name
+                  val process_result = job.join
+                  process_result.err_lines.foreach(progress.echo)
+
+                  if (process_result.ok) {
+                    val session_description =
+                      build_deps.sessions_structure(session_name).description
+                    presentation_context0.update_chapter(session_name, session_description)
+                    progress.echo(
+                      "Finished presenting " + session_name + " in " + presentation_dir)
+                    results
+                  }
+                  else {
+                    progress.echo("Presenting " + session_name + " FAILED")
+                    results +
+                      (session_name -> results(session_name).copy(process = Some(process_result)))
+                  }
               }
 
-              val build_log =
-                Build_Log.Log_File(session_name, process_result.out_lines).
-                  parse_session_info(
-                    command_timings = true,
-                    theory_timings = true,
-                    ml_statistics = true,
-                    task_statistics = true)
-
-              // write log file
-              if (process_result.ok) {
-                File.write_gzip(store.output_log_gz(session_name), terminate_lines(log_lines))
-              }
-              else File.write(store.output_log(session_name), terminate_lines(log_lines))
-
-              // write database
-              val sources = Sessions.Sources.load(build_deps.background(session_name).base,
-                cache = store.cache.compress)
-              using(store.open_database(session_name, output = true))(db =>
-                store.write_session_info(db, session_name, sources,
-                  build_log =
-                    if (process_result.timeout) build_log.error("Timeout") else build_log,
-                  build =
-                    Build.Session_Info(sources_stamp(build_deps, session_name), input_heaps,
-                      heap_digest, process_result.rc, UUID.random().toString)))
-
-              // messages
-              process_result.err_lines.foreach(progress.echo)
-
-              if (process_result.ok) {
-                if (verbose) progress.echo(session_timing(session_name, build_log))
-                progress.echo(session_finished(session_name, process_result))
-              }
-              else {
-                progress.echo(session_name + " FAILED")
-                if (!process_result.interrupted) progress.echo(process_result_tail.out)
-              }
-
-              loop(
-                state.copy(
-                  pending = state.pending.del_node(session_name),
-                  running_builds = state.running_builds - session_name),
-                results = results +
-                  (session_name -> Result(false, heap_digest, Some(process_result_tail), info)))
+              loop(state.del(job.task), results1)
               //}}}
             case None =>
-              state.running_presentations.find({ case (_, job) => job.is_finished }) match {
-                case Some((session_name, exec)) =>
-                  //{{{ finish presentation job
-                  val process_result = exec.join
-                  process_result.err_lines.foreach(progress.echo)
-                  val results1 =
-                    if (process_result.ok) {
-                      val session_description =
-                        build_deps.sessions_structure(session_name).description
-                      presentation_context0.update_chapter(session_name, session_description)
-                      progress.echo(
-                        "Finished presenting " + session_name + " in " + presentation_dir)
-                      results
-                    }
-                    else {
-                      progress.echo("Presenting " + session_name + " FAILED")
-                      results +
-                        (session_name -> results(session_name).copy(process = Some(process_result)))
-                    }
+              //{{{ check/start next build job
+              ctx.schedule(state) match {
+                case Some(task0: Build_Task, config) =>
+                  val session_name = task0.session_name
+                  val info = build_deps.sessions_structure.build_graph.get_node(session_name)
+                  val ancestor_results =
+                    build_deps.sessions_structure.build_requirements(List(session_name)).
+                      filterNot(_ == session_name).map(results(_))
+                  val ancestor_heaps = ancestor_results.flatMap(_.heap_digest)
 
-                  loop(
-                    state.copy(
-                      running_presentations = state.running_presentations - session_name,
-                      presentation_sessions =
-                        state.presentation_sessions.filterNot(_ == session_name)),
-                    results1)
-                  //}}}
-                case None if !state.pending.keys_iterator.forall(state.running_builds.contains) =>
-                  //{{{ check/start next build job
-                  ctx.schedule_build(state) match {
-                    case Some((session_name, config)) =>
-                      val info = state.pending.get_node(session_name)
-                      val ancestor_results =
-                        build_deps.sessions_structure.build_requirements(List(session_name)).
-                          filterNot(_ == session_name).map(results(_))
-                      val ancestor_heaps = ancestor_results.flatMap(_.heap_digest)
+                  val is_maximal_build = {
+                    val succ_tasks =
+                      state.pending.imm_succs(task0.name).toList.map(state.pending.get_node)
+                    succ_tasks.collectFirst({ case build: Build_Task => build }).isEmpty
+                  }
 
-                      val do_store =
-                        build_heap || Sessions.is_pure(session_name) ||
-                          !state.pending.is_maximal(session_name)
+                  val do_store =
+                    build_heap || Sessions.is_pure(session_name) || !is_maximal_build
 
-                      val (current, heap_digest) = {
-                        store.try_open_database(session_name) match {
-                          case Some(db) =>
-                            using(db)(store.read_build(_, session_name)) match {
-                              case Some(build) =>
-                                val heap_digest = store.find_heap_digest(session_name)
-                                val current =
-                                  !fresh_build &&
-                                  build.ok &&
-                                  build.sources == sources_stamp(build_deps, session_name) &&
-                                  build.input_heaps == ancestor_heaps &&
-                                  build.output_heap == heap_digest &&
-                                  !(do_store && heap_digest.isEmpty)
-                                (current, heap_digest)
-                              case None => (false, None)
-                            }
+                  val (current, heap_digest) = {
+                    store.try_open_database(session_name) match {
+                      case Some(db) =>
+                        using(db)(store.read_build(_, session_name)) match {
+                          case Some(build) =>
+                            val heap_digest = store.find_heap_digest(session_name)
+                            val current =
+                              !fresh_build &&
+                              build.ok &&
+                              build.sources == sources_stamp(build_deps, session_name) &&
+                              build.input_heaps == ancestor_heaps &&
+                              build.output_heap == heap_digest &&
+                              !(do_store && heap_digest.isEmpty)
+                            (current, heap_digest)
                           case None => (false, None)
                         }
-                      }
-                      val all_current = current && ancestor_results.forall(_.current)
-
-                      if (all_current) {
-                        loop(state.copy(pending = state.pending.del_node(session_name)),
-                          results +
-                            (session_name ->
-                              Result(true, heap_digest, Some(Process_Result(0)), info)))
-                      }
-                      else if (no_build) {
-                        progress.echo_if(verbose, "Skipping " + session_name + " ...")
-                        loop(state.copy(pending = state.pending.del_node(session_name)),
-                          results +
-                            (session_name ->
-                              Result(false, heap_digest, Some(Process_Result(1)), info)))
-                      }
-                      else if (ancestor_results.forall(_.ok) && !progress.stopped) {
-                        progress.echo(
-                          (if (do_store) "Building " else "Running ") + session_name + " ...")
-
-                        store.clean_output(session_name)
-                        using(store.open_database(session_name, output = true))(
-                          store.init_session_info(_, session_name))
-
-                        val job =
-                          Build_Scheduler.Build_Task(session_name,
-                            build_deps.background(session_name), store, do_store, log,
-                            command_timings0(session_name))
-                        loop(state.copy(
-                          running_builds = state.running_builds +
-                            (session_name ->
-                              (ancestor_heaps, ctx.execute(session_name, config, job)))),
-                          results)
-                      }
-                      else {
-                        progress.echo(session_name + " CANCELLED")
-                        loop(state.copy(pending = state.pending.del_node(session_name)),
-                          results +
-                            (session_name -> Result(false, heap_digest, None, info)))
-                      }
-                    case None => sleep(); loop(state, results)
+                      case None => (false, None)
+                    }
                   }
-                  ///}}}
-                case None =>
-                  //{{{ check/start new presentation job
-                  ctx.schedule_presentation(state) match {
-                    case Some((session_name, config)) =>
-                      if (results(session_name).ok && !progress.stopped) {
-                        progress.echo("Presenting " + session_name)
+                  val all_current = current && ancestor_results.forall(_.current)
 
-                        val job =
-                          Build_Scheduler.Present_Task(session_name, presentation_dir, build_deps,
-                            session_name, store)
-                        loop(
-                          state.copy(running_presentations =
-                            state.running_presentations +
-                              (session_name -> ctx.execute(session_name, config, job))), results)
-                      }
-                      else {
-                        progress.echo(session_name + " Presentation CANCELLED")
-                        loop(state.copy(presentation_sessions =
-                          presentation_sessions.filterNot(_ == session_name)), results)
-                      }
-                    case None => sleep(); loop(state, results)
+                  if (all_current) {
+                    loop(state.del(task0), results +
+                      (session_name -> Result(true, heap_digest, Some(Process_Result(0)), info)))
                   }
-                  //}}}
+                  else if (no_build) {
+                    progress.echo_if(verbose, "Skipping " + session_name + " ...")
+                    loop(state.del(task0), results +
+                      (session_name -> Result(false, heap_digest, Some(Process_Result(1)), info)))
+                  }
+                  else if (ancestor_results.forall(_.ok) && !progress.stopped) {
+                    progress.echo(
+                      (if (do_store) "Building " else "Running ") + session_name + " ...")
+
+                    store.clean_output(session_name)
+                    using(store.open_database(session_name, output = true))(
+                      store.init_session_info(_, session_name))
+
+                    val task = task0.copy(session_background = build_deps.background(session_name),
+                      store = store, do_store = do_store, log = log,
+                      command_timings0 = command_timings0(session_name),
+                      input_heaps = ancestor_heaps)
+
+                    loop(state.run(task, config), results)
+                  }
+                  else {
+                    progress.echo(session_name + " CANCELLED")
+                    loop(state.del(task0),
+                      results + (session_name -> Result(false, heap_digest, None, info)))
+                  }
+                case Some(task0: Present_Task, config) =>
+                  val session_name = task0.session_name
+                  if (results(session_name).ok && !progress.stopped) {
+                    progress.echo("Presenting " + session_name)
+
+                    val task =
+                      task0.copy(root_dir = presentation_dir, deps = build_deps, store = store)
+                    loop(state.run(task, config), results)
+                  }
+                  else {
+                    progress.echo(session_name + " Presentation CANCELLED")
+                    loop(state.del(task0), results)
+                  }
+                case None => sleep(); loop(state, results)
               }
+              ///}}}
           }
         }
 
