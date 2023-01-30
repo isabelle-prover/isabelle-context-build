@@ -170,7 +170,11 @@ object Slurm {
       }
 
       def is_finished: Boolean = future_result.is_finished
-      def join: Process_Result = future_result.join
+      def join: Process_Result = {
+        val res = future_result.join
+        if (res.ok) res.copy(err_lines = res.err_lines.filterNot(_.startsWith("srun:")))
+        else res
+      }
       def terminate(): Unit = {
         terminated = true
         Isabelle_System.bash("scancel --name=" + Bash.string(id))
