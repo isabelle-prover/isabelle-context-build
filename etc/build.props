@@ -3,6 +3,7 @@ module=$CONTEXT_BUILD_HOME/lib/context_build.jar
 requirements= \
   env:ISABELLE_SCALA_JAR
 sources= \
+  src/buffered_progress.scala \
   src/build_scheduler.scala \
   src/context_build.scala \
   src/memory.scala \

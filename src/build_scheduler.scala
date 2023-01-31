@@ -198,13 +198,8 @@ object Build_Scheduler {
 
     class Present_Job private[Local_Context](task: Present_Task, config: Config)
       extends Job(task, config) {
-      private var out = ""
-      private var err = ""
-      private val progress = new Progress {
-        override def echo(msg: String): Unit = out += msg
-        override def echo_warning(msg: String): Unit = err += msg
-        override def echo_error_message(msg: String): Unit = err += msg
-      }
+
+      val progress = new Buffered_Progress()
 
       private val future_result = Future.thread("present", uninterruptible = true) {
         using(Export.open_database_context(task.store)) { database_context =>
@@ -215,14 +210,13 @@ object Build_Scheduler {
                 Document_Info.read(database_context, task.deps, List(task.session_name)))
 
           using(database_context.open_session(task.deps.background(task.session_name)))(
-            Browser_Info.build_session(context1, _, progress = progress,
-              verbose = task.verbose))
+            Browser_Info.build_session(context1, _, progress = progress, verbose = task.verbose))
         }
       }
 
       def join: Process_Result = {
         val future_res = future_result.join_result
-        val process_res = Process_Result(0, split_lines(out), split_lines(err))
+        val process_res = Process_Result(0, split_lines(progress.out), split_lines(progress.err))
         future_res match {
           case Exn.Res(()) => process_res
           case Exn.Exn(exn) => process_res.copy(rc = 1, err_lines =
