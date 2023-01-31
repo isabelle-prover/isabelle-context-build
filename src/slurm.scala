@@ -101,7 +101,7 @@ object Slurm {
         val task = state.pending.get_node(name)
         val threads = num_threads(name)
         cpus.find(_._2 >= threads).map(_._1).map(p =>
-          task -> Config(Some(p), threads, Memory.GiB(8)))
+          task -> Config(Some(p), threads, Space.GiB(8)))
       }
 
       Strategy_Args(state.pending.keys, partitions.map(p => p -> cpus(p)), max_height, paths,
@@ -129,7 +129,7 @@ object Slurm {
               memory <- JSON.int(obj, "real_memory")
               partitions <- JSON.strings(obj, "partitions")
               partition <- partitions.headOption
-            } yield Config(Some(partition), cpus, Memory.KiB(memory)))
+            } yield Config(Some(partition), cpus, Space.KiB(memory)))
         } yield nodes
 
       nodes match {
@@ -156,7 +156,7 @@ object Slurm {
             "--nodes=1" ::
             "--ntasks=1" ::
             ("--cpus-per-task=" + config.threads) ::
-            ("--mem=" + config.memory.KiB.toInt + "K") ::
+            ("--mem=" + config.space.KiB.toInt + "K") ::
             ("--export=USER_HOME=" + Bash.string(File.symbolic_path(worker_home))) ::
             ("--chdir=" + Bash.string(File.symbolic_path(worker_isabelle))) ::
             config.partition.map(p => List("--partition=" + Bash.string(p))).getOrElse(Nil)
@@ -249,7 +249,7 @@ object Slurm {
     }
   }
 
-  case class Config(partition: Option[String], threads: Int, memory: Memory)
+  case class Config(partition: Option[String], threads: Int, space: Space)
 
   implicit val time_ordering: Ordering[Time] = Ordering.by(_.ms)
 
