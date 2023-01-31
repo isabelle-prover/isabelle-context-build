@@ -390,7 +390,10 @@ object Context_Build {
                   }
                 case Some(task0: Present_Task, config) =>
                   val session_name = task0.session_name
-                  if (results(session_name).ok && !progress.stopped) {
+                  if (results(session_name).current) {
+                    progress.echo("Skipping presentation of " + session_name)
+                    loop(state.del(task0), results)
+                  } else if (results(session_name).ok && !progress.stopped) {
                     progress.echo("Presenting " + session_name)
 
                     val task =
