@@ -154,7 +154,9 @@ object Context_Build {
       else deps0
     }
 
-    val names = build_deps.sessions_structure.build_graph.keys
+    val build_graph = build_deps.sessions_structure.build_graph
+
+    val names = build_graph.keys
     val timings = names.map(name => (name, load_timings(progress, store, name)))
     val command_timings0 =
       timings.map({ case (name, (ts, _)) => (name, ts) }).toMap.withDefaultValue(Nil)
@@ -242,12 +244,13 @@ object Context_Build {
               val results1 = job.task match {
                 case build: Build_Task =>
                   val session_name = build.session_name
+                  val info = build_graph.get_node(build.session_name)
                   val process_result = job.join
                   val heap_digest = store.find_heap_digest(session_name)
 
                   val log_lines = process_result.out_lines.filterNot(Protocol_Message.Marker.test)
                   val process_result_tail = {
-                    val tail = build.info.options.int("process_output_tail")
+                    val tail = info.options.int("process_output_tail")
                     process_result.copy(
                       out_lines =
                         "(see also " + store.output_log(session_name).file.toString + ")" ::
@@ -292,7 +295,7 @@ object Context_Build {
                     if (!process_result.interrupted) progress.echo(process_result_tail.out)
                   }
                   results + (session_name ->
-                    Result(false, heap_digest, Some(process_result_tail), build.info))
+                    Result(false, heap_digest, Some(process_result_tail), info))
 
                 case presentation: Present_Task =>
                   val session_name = presentation.session_name
@@ -321,7 +324,7 @@ object Context_Build {
               ctx.schedule(state) match {
                 case Some(task0: Build_Task, config) =>
                   val session_name = task0.session_name
-                  val info = build_deps.sessions_structure.build_graph.get_node(session_name)
+                  val info = build_graph.get_node(session_name)
                   val ancestor_results =
                     build_deps.sessions_structure.build_requirements(List(session_name)).
                       filterNot(_ == session_name).map(results(_))
@@ -374,10 +377,8 @@ object Context_Build {
                     using(store.open_database(session_name, output = true))(
                       store.init_session_info(_, session_name))
 
-                    val task = task0.copy(session_background = build_deps.background(session_name),
-                      store = store, do_store = do_store, log = log,
-                      command_timings0 = command_timings0(session_name),
-                      input_heaps = ancestor_heaps)
+                    val task = task0.copy(do_store = do_store, log = log, command_timings0 =
+                      command_timings0(session_name), input_heaps = ancestor_heaps)
 
                     loop(state.run(task, config), results)
                   }
@@ -391,8 +392,7 @@ object Context_Build {
                   if (results(session_name).ok && !progress.stopped) {
                     progress.echo("Presenting " + session_name)
 
-                    val task =
-                      task0.copy(root_dir = presentation_dir, deps = build_deps, store = store)
+                    val task = task0.copy(root_dir = presentation_dir)
                     loop(state.run(task, config), results)
                   }
                   else {

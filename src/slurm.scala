@@ -185,7 +185,7 @@ object Slurm {
       task: Build_Task,
       config: Config
     ) extends Slurm_Job(task, config) {
-      lazy val info = task.info
+      lazy val info = build.structure.build_graph.get_node(task.session_name)
       lazy val dirs =
         info.dirs.filter(Sessions.is_session_dir).map(File.symbolic_path)
 

@@ -66,35 +66,18 @@ object Build_Scheduler {
 
   case class Build_Task(
     session_name: String,
-    session_background: Sessions.Background,
-    store: Sessions.Store,
-    do_store: Boolean,
-    log: Logger,
-    command_timings0: List[Properties.T],
-    input_heaps: List[String]
-  ) extends Task_Def("build|" + session_name) {
-    lazy val info: Sessions.Info = session_background.sessions_structure(session_name)
-  }
-
-  object Build_Task {
-    def task0(session_name: String): Build_Task =
-      Build_Task(session_name, Sessions.background0(session_name), Sessions.store(Options.init()),
-        false, Logger.make(None), Nil, Nil)
-  }
+    do_store: Boolean = false,
+    log: Logger = Logger.make(None),
+    command_timings0: List[Properties.T] = Nil,
+    input_heaps: List[String] = Nil,
+  ) extends Task_Def("build|" + session_name)
 
   case class Present_Task(
     session_name: String,
-    root_dir: Path,
-    deps: Sessions.Deps,
-    store: Sessions.Store,
+    root_dir: Path = Path.current,
     verbose: Boolean = false
   ) extends Task_Def("presentation|" + session_name)
 
-  object Present_Task {
-    def task0(session_name: String): Present_Task =
-      Present_Task(session_name, Path.root, Sessions.deps(Sessions.Structure.empty),
-        Sessions.store(Options.init()))
-  }
 
   /* execution context */
 
@@ -131,11 +114,11 @@ object Build_Scheduler {
 
         val entries: Iterator[((String, Task_Def), List[String])] =
           graph.keys_iterator.flatMap { session_name =>
-            val build_task = Build_Task.task0(session_name)
-            val deps = graph.imm_preds(session_name).toList.map(Build_Task.task0)
+            val build_task = Build_Task(session_name)
+            val deps = graph.imm_preds(session_name).toList.map(Build_Task(_))
             val presentation_node =
               if (presentation_sessions.contains(session_name)) {
-                val present_task = Present_Task.task0(session_name)
+                val present_task = Present_Task(session_name)
                 Some((present_task.name, present_task), List(build_task.name))
               } else None
 
@@ -180,16 +163,16 @@ object Build_Scheduler {
         val next = state.pending.minimals.filterNot(state.running.contains).toSet
 
         for {
-          task <- sorted.map(Build_Task.task0).find(task => next.contains(task.name)) orElse
-            sorted.map(Present_Task.task0).find(task => next.contains(task.name))
+          task <- sorted.map(Build_Task(_)).find(task => next.contains(task.name)) orElse
+            sorted.map(Present_Task(_)).find(task => next.contains(task.name))
         } yield task -> numa.next(used_node)
       }
 
     class Build_Job private[Local_Context](task: Build_Task, config: Config)
       extends Job(task, config) {
       private val build_job = new isabelle.Build_Job(
-        progress, task.session_background, task.store, task.do_store, task.log, (_, _) => (),
-        config, task.command_timings0)
+        progress, build.deps.background(task.session_name), build.store, task.do_store, task.log,
+        (_, _) => (), config, task.command_timings0)
 
       def join: Process_Result = build_job.join._1
       def terminate(): Unit = build_job.terminate()
@@ -202,14 +185,14 @@ object Build_Scheduler {
       val progress = new Buffered_Progress()
 
       private val future_result = Future.thread("present", uninterruptible = true) {
-        using(Export.open_database_context(task.store)) { database_context =>
+        using(Export.open_database_context(build.store)) { database_context =>
 
           val context1 =
-            Browser_Info.context(task.deps.sessions_structure,
+            Browser_Info.context(build.structure,
               root_dir = task.root_dir, document_info =
-                Document_Info.read(database_context, task.deps, List(task.session_name)))
+                Document_Info.read(database_context, build.deps, List(task.session_name)))
 
-          using(database_context.open_session(task.deps.background(task.session_name)))(
+          using(database_context.open_session(build.deps.background(task.session_name)))(
             Browser_Info.build_session(context1, _, progress = progress, verbose = task.verbose))
         }
       }
