@@ -556,58 +556,60 @@ Usage: isabelle contex_build [OPTIONS] [SESSIONS ...]
           "Started at " + Build_Log.print_date(start_date) +
             " (" + Isabelle_System.getenv("ML_IDENTIFIER") + " on " + Isabelle_System.hostname() +")")
 
-      strategy.foreach { strategy =>
-        val (user_home, isabelle_home) = cluster_dirs match {
-          case user_home :: isabelle_home :: Nil => (user_home, isabelle_home)
-          case _ => getopts.usage()
+      using(Slurm.Store.open_db) { db =>
+        strategy.foreach { strategy =>
+          val (user_home, isabelle_home) = cluster_dirs match {
+            case user_home :: isabelle_home :: Nil => (user_home, isabelle_home)
+            case _ => getopts.usage()
+          }
+          scheduler =
+            new Slurm_Scheduler(isabelle_home, user_home, partitions, db, strategy)
         }
-        scheduler =
-          new Slurm_Scheduler(isabelle_home, user_home, partitions, Slurm.Store.open_db, strategy)
-      }
 
-      val results =
-        progress.interrupt_handler {
-          build(
-            start_date,
-            scheduler,
-            options,
-            selection = Sessions.Selection(
-              requirements = requirements,
-              all_sessions = all_sessions,
-              base_sessions = base_sessions,
-              exclude_session_groups = exclude_session_groups,
-              exclude_sessions = exclude_sessions,
-              session_groups = session_groups,
-              sessions = sessions),
-            browser_info = browser_info,
-            progress = progress,
-            check_unknown_files = Mercurial.is_repository(Path.ISABELLE_HOME),
-            build_heap = build_heap,
-            clean_build = clean_build,
-            dirs = dirs,
-            select_dirs = select_dirs,
-            list_files = list_files,
-            check_keywords = check_keywords,
-            fresh_build = fresh_build,
-            no_build = no_build,
-            soft_build = soft_build,
-            verbose = verbose,
-            verbose_presentation = verbose_presentation,
-            export_files = export_files)
+        val results =
+          progress.interrupt_handler {
+            build(
+              start_date,
+              scheduler,
+              options,
+              selection = Sessions.Selection(
+                requirements = requirements,
+                all_sessions = all_sessions,
+                base_sessions = base_sessions,
+                exclude_session_groups = exclude_session_groups,
+                exclude_sessions = exclude_sessions,
+                session_groups = session_groups,
+                sessions = sessions),
+              browser_info = browser_info,
+              progress = progress,
+              check_unknown_files = Mercurial.is_repository(Path.ISABELLE_HOME),
+              build_heap = build_heap,
+              clean_build = clean_build,
+              dirs = dirs,
+              select_dirs = select_dirs,
+              list_files = list_files,
+              check_keywords = check_keywords,
+              fresh_build = fresh_build,
+              no_build = no_build,
+              soft_build = soft_build,
+              verbose = verbose,
+              verbose_presentation = verbose_presentation,
+              export_files = export_files)
+          }
+        val end_date = Date.now()
+        val elapsed_time = end_date.time - start_date.time
+
+        if (verbose) {
+          progress.echo("\nFinished at " + Build_Log.print_date(end_date))
         }
-      val end_date = Date.now()
-      val elapsed_time = end_date.time - start_date.time
 
-      if (verbose) {
-        progress.echo("\nFinished at " + Build_Log.print_date(end_date))
+        val total_timing =
+          results.sessions.iterator.map(a => results(a).timing).foldLeft(Timing.zero)(_ + _).
+            copy(elapsed = elapsed_time)
+        progress.echo(total_timing.message_resources)
+
+        sys.exit(results.rc)
       }
-
-      val total_timing =
-        results.sessions.iterator.map(a => results(a).timing).foldLeft(Timing.zero)(_ + _).
-          copy(elapsed = elapsed_time)
-      progress.echo(total_timing.message_resources)
-
-      sys.exit(results.rc)
     })
 }
 
