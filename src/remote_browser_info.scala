@@ -174,6 +174,7 @@ object Remote_Browser_Info {
 
       var browser_info = Browser_Info.Config.none
       var options = Options.init(opts = build_options)
+      var verbose = false
 
       val getopts = Getopts(
         """
@@ -182,11 +183,13 @@ Usage: isabelle presentation [OPTIONS] SESSION
   Options are:
     -P DIR       build HTML/PDF presentation in directory (":" for default)
     -o OPTION    override Isabelle system OPTION (via NAME=VAL or NAME)
+    -v           verbose
 
   Run a single presentation job.
 """,
         "P:" -> (arg => browser_info = Browser_Info.Config.make(arg)),
-        "o:" -> (arg => options = options + arg))
+        "o:" -> (arg => options = options + arg),
+        "v" -> (_ => verbose = true))
 
       val session_name =
         getopts(args) match {
@@ -196,6 +199,6 @@ Usage: isabelle presentation [OPTIONS] SESSION
 
       val progress = new Console_Progress()
       val res = build(session_name = session_name, browser_info = browser_info, options = options,
-        progress = progress)
+        progress = progress, verbose = verbose)
     })
 }

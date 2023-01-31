@@ -221,7 +221,11 @@ object Slurm {
       config: Config,
     ) extends Slurm_Job(task, config) {
       lazy val isabelle_command: List[String] =
-        List("presentation", "-P " + Bash.string(File.symbolic_path(task.root_dir)), task.session_name)
+        "presentation" ::
+          ("-P " + Bash.string(File.symbolic_path(task.root_dir))) ::
+          (if (task.verbose) List("-v") else Nil) :::
+          task.session_name ::
+          Nil
     }
 
     def execute(task: Task_Def, config: Config): Job =

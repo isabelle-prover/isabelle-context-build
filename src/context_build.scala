@@ -102,6 +102,7 @@ object Context_Build {
     no_build: Boolean = false,
     soft_build: Boolean = false,
     verbose: Boolean = false,
+    verbose_presentation: Boolean = false,
     export_files: Boolean = false,
   ): Results = {
     val build_options =
@@ -392,7 +393,8 @@ object Context_Build {
                   if (results(session_name).ok && !progress.stopped) {
                     progress.echo("Presenting " + session_name)
 
-                    val task = task0.copy(root_dir = presentation_dir)
+                    val task =
+                      task0.copy(root_dir = presentation_dir, verbose = verbose_presentation)
                     loop(state.run(task, config), results)
                   }
                   else {
@@ -461,6 +463,7 @@ object Context_Build {
       var browser_info = Browser_Info.Config.none
       var requirements = false
       var soft_build = false
+      var verbose_presentation = false
       var exclude_session_groups: List[String] = Nil
       var all_sessions = false
       var build_heap = false
@@ -488,6 +491,7 @@ Usage: isabelle contex_build [OPTIONS] [SESSIONS ...]
     -P DIR       enable HTML/PDF presentation in directory (":" for default)
     -R           refer to requirements of selected sessions
     -S           soft build: only observe changes of sources, not heap images
+    -V           verbose presentation
     -X NAME      exclude sessions from group NAME and all descendants
     -a           select all sessions
     -b           build heap images
@@ -519,6 +523,7 @@ Usage: isabelle contex_build [OPTIONS] [SESSIONS ...]
         "P:" -> (arg => browser_info = Browser_Info.Config.make(arg)),
         "R" -> (_ => requirements = true),
         "S" -> (_ => soft_build = true),
+        "V" -> (_ => verbose_presentation = true),
         "X:" -> (arg => exclude_session_groups = exclude_session_groups ::: List(arg)),
         "a" -> (_ => all_sessions = true),
         "b" -> (_ => build_heap = true),
@@ -584,6 +589,7 @@ Usage: isabelle contex_build [OPTIONS] [SESSIONS ...]
             no_build = no_build,
             soft_build = soft_build,
             verbose = verbose,
+            verbose_presentation = verbose_presentation,
             export_files = export_files)
         }
       val end_date = Date.now()
