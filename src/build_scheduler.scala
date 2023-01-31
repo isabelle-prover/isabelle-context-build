@@ -111,14 +111,6 @@ object Build_Scheduler {
       val pending: Graph[String, Task_Def],
       val running: Map[String, Job]
     ) {
-      override def equals(that: Any): Boolean =
-        that match {
-          case that: State =>
-            pending == that.pending && running.keys == that.running.keys
-          case _ => false
-        }
-      override def hashCode(): Int = (pending, running.keys).hashCode()
-
       def run(task: Task_Def, config: Config): State =
         new State(pending, running + (task.name -> execute(task, config)))
       def del(task: Task_Def): State =
