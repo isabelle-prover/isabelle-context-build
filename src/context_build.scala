@@ -122,14 +122,6 @@ object Context_Build {
       Sessions.load_structure(build_options, dirs = dirs, select_dirs = select_dirs, infos = infos)
     val full_sessions_selection = full_sessions.imports_selection(selection)
 
-    def sources_stamp(deps: Sessions.Deps, session_name: String): String = {
-      val digests =
-        full_sessions(session_name).meta_digest ::
-        deps.session_sources(session_name) :::
-        deps.imported_sources(session_name)
-      SHA1.digest_set(digests).toString
-    }
-
     val build_deps = {
       val deps0 =
         Sessions.deps(full_sessions.selection(selection),
@@ -143,7 +135,7 @@ object Context_Build {
               case Some(db) =>
                 using(db)(store.read_build(_, name)) match {
                   case Some(build)
-                  if build.ok && build.sources == sources_stamp(deps0, name) => None
+                  if build.ok && build.sources == deps0.sources_shasum(name) => None
                   case _ => Some(name)
                 }
               case None => Some(name)
@@ -211,7 +203,7 @@ object Context_Build {
       // scheduler loop
       case class Result(
         current: Boolean,
-        heap_digest: Option[String],
+        output_heap: SHA1.Shasum,
         process: Option[Process_Result],
         info: Sessions.Info
       ) {
@@ -247,7 +239,6 @@ object Context_Build {
                   val session_name = build.session_name
                   val info = build_graph.get_node(build.session_name)
                   val process_result = job.join
-                  val heap_digest = store.find_heap_digest(session_name)
 
                   val log_lines = process_result.out_lines.filterNot(Protocol_Message.Marker.test)
                   val process_result_tail = {
@@ -272,6 +263,12 @@ object Context_Build {
                   }
                   else File.write(store.output_log(session_name), terminate_lines(log_lines))
 
+                  val output_heap =
+                    if (process_result.ok && build.do_store && store.output_heap(session_name).is_file) {
+                      SHA1.shasum(ML_Heap.write_digest(store.output_heap(session_name)), session_name)
+                    }
+                    else SHA1.no_shasum
+
                   // write database
                   val sources = Sessions.Sources.load(build_deps.background(session_name).base,
                     cache = store.cache.compress)
@@ -280,8 +277,8 @@ object Context_Build {
                       build_log =
                         if (process_result.timeout) build_log.error("Timeout") else build_log,
                       build =
-                        Build.Session_Info(sources_stamp(build_deps, session_name),
-                          build.input_heaps, heap_digest, process_result.rc,
+                        Build.Session_Info(build_deps.sources_shasum(session_name),
+                          build.input_heaps, output_heap, process_result.rc,
                           UUID.random().toString)))
 
                   // messages
@@ -296,7 +293,7 @@ object Context_Build {
                     if (!process_result.interrupted) progress.echo(process_result_tail.out)
                   }
                   results + (session_name ->
-                    Result(false, heap_digest, Some(process_result_tail), info))
+                    Result(false, output_heap, Some(process_result_tail), info))
 
                 case presentation: Present_Task =>
                   val session_name = presentation.session_name
@@ -329,7 +326,11 @@ object Context_Build {
                   val ancestor_results =
                     build_deps.sessions_structure.build_requirements(List(session_name)).
                       filterNot(_ == session_name).map(results(_))
-                  val ancestor_heaps = ancestor_results.flatMap(_.heap_digest)
+                  val input_heaps =
+                    if (ancestor_results.isEmpty) {
+                      SHA1.shasum_meta_info(SHA1.digest(Path.explode("$POLYML_EXE")))
+                    }
+                    else SHA1.flat_shasum(ancestor_results.map(_.output_heap))
 
                   val is_maximal_build = {
                     val succ_tasks =
@@ -340,35 +341,35 @@ object Context_Build {
                   val do_store =
                     build_heap || Sessions.is_pure(session_name) || !is_maximal_build
 
-                  val (current, heap_digest) = {
+                  val (current, output_heap) = {
                     store.try_open_database(session_name) match {
                       case Some(db) =>
                         using(db)(store.read_build(_, session_name)) match {
                           case Some(build) =>
-                            val heap_digest = store.find_heap_digest(session_name)
+                            val output_heap = store.find_heap_shasum(session_name)
                             val current =
                               !fresh_build &&
                               build.ok &&
-                              build.sources == sources_stamp(build_deps, session_name) &&
-                              build.input_heaps == ancestor_heaps &&
-                              build.output_heap == heap_digest &&
-                              !(do_store && heap_digest.isEmpty)
-                            (current, heap_digest)
-                          case None => (false, None)
+                              build.sources == build_deps.sources_shasum(session_name) &&
+                              build.input_heaps == input_heaps &&
+                              build.output_heap == output_heap &&
+                              !(do_store && output_heap.is_empty)
+                            (current, output_heap)
+                          case None => (false, SHA1.no_shasum)
                         }
-                      case None => (false, None)
+                      case None => (false, SHA1.no_shasum)
                     }
                   }
                   val all_current = current && ancestor_results.forall(_.current)
 
                   if (all_current) {
                     loop(state.del(task0), results +
-                      (session_name -> Result(true, heap_digest, Some(Process_Result(0)), info)))
+                      (session_name -> Result(true, output_heap, Some(Process_Result.ok), info)))
                   }
                   else if (no_build) {
                     progress.echo_if(verbose, "Skipping " + session_name + " ...")
                     loop(state.del(task0), results +
-                      (session_name -> Result(false, heap_digest, Some(Process_Result(1)), info)))
+                      (session_name -> Result(false, output_heap, Some(Process_Result.error), info)))
                   }
                   else if (ancestor_results.forall(_.ok) && !progress.stopped) {
                     progress.echo(
@@ -379,14 +380,14 @@ object Context_Build {
                       store.init_session_info(_, session_name))
 
                     val task = task0.copy(do_store = do_store, log = log, command_timings0 =
-                      command_timings0(session_name), input_heaps = ancestor_heaps)
+                      command_timings0(session_name), input_heaps = input_heaps)
 
                     loop(state.run(task, config), results)
                   }
                   else {
                     progress.echo(session_name + " CANCELLED")
                     loop(state.del(task0),
-                      results + (session_name -> Result(false, heap_digest, None, info)))
+                      results + (session_name -> Result(false, output_heap, None, info)))
                   }
                 case Some(task0: Present_Task, config) =>
                   val session_name = task0.session_name

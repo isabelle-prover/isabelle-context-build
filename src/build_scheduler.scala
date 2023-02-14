@@ -69,7 +69,7 @@ object Build_Scheduler {
     do_store: Boolean = false,
     log: Logger = Logger.make(None),
     command_timings0: List[Properties.T] = Nil,
-    input_heaps: List[String] = Nil,
+    input_heaps: SHA1.Shasum = SHA1.no_shasum,
   ) extends Task_Def("build|" + session_name)
 
   case class Present_Task(
@@ -171,10 +171,11 @@ object Build_Scheduler {
     class Build_Job private[Local_Context](task: Build_Task, config: Config)
       extends Job(task, config) {
       private val build_job = new isabelle.Build_Job(
-        progress, build.deps.background(task.session_name), build.store, task.do_store, task.log,
-        (_, _) => (), config, task.command_timings0)
+        progress, build.deps.background(task.session_name), build.store, task.do_store,
+        new Resources(build.deps.background(task.session_name), task.log,task.command_timings0),
+        (_, _) => (), config)
 
-      def join: Process_Result = build_job.join._1
+      def join: Process_Result = build_job.join
       def terminate(): Unit = build_job.terminate()
       def is_finished: Boolean = build_job.is_finished
     }

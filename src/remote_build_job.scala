@@ -73,7 +73,7 @@ object Remote_Build_Job {
     dirs: List[Path],
     do_store: Boolean,
     numa_node: Option[Int],
-  ): (Process_Result, Option[String]) = {
+  ): Process_Result = {
     val progress = new Progress
 
     val build_options =
@@ -103,7 +103,7 @@ object Remote_Build_Job {
 
     val job =
       new Build_Job(progress, deps.background(session_name), store, do_store,
-        log, session_setup, numa_node, Nil)
+        new Resources(deps.background(session_name), log), session_setup, numa_node)
 
     job.join
   }
@@ -140,7 +140,7 @@ Usage: isabelle build_job [OPTIONS] SESSION
           case _ => getopts.usage()
         }
 
-      val (res, _) =
+      val res =
         build_job(session_name = session_name, options = options, dirs = dirs,
           do_store = build_heap, numa_node = numa_node)
 

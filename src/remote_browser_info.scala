@@ -7,7 +7,7 @@ Command-line interface to build browser info on a remote Isabelle process.
 package isabelle
 
 
-import Browser_Info.{Meta_Data, Node_Context}
+import Browser_Info.{Meta_Info, Node_Context}
 
 
 object Remote_Browser_Info {
@@ -49,8 +49,8 @@ object Remote_Browser_Info {
         val session_dir = context.session_dir(session_name).expand
         progress.echo("Presenting " + session_name + " in " + session_dir + " ...")
 
-        Meta_Data.init_directory(context.chapter_dir(session_name))
-        Meta_Data.clean_directory(session_dir)
+        Meta_Info.init_directory(context.chapter_dir(session_name))
+        Meta_Info.clean_directory(session_dir)
 
         val session = context.document_info.the_session(session_name)
 
@@ -159,7 +159,7 @@ object Remote_Browser_Info {
             context.contents("Theories", theories),
           root = Some(context.root_dir))
 
-        Meta_Data.set_build_uuid(session_dir, session.build_uuid)
+        Meta_Info.set_build_uuid(session_dir, session.build_uuid)
         /*END*/
       }
     }
