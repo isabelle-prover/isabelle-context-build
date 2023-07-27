@@ -51,6 +51,9 @@ object Planned_Build {
       accumulated.flatMap((name, ms) => graph.all_preds(List(name)).map(_ -> Time.ms(ms))).toMap
     }
 
+    def parallel_paths(graph: Graph[String, _], node: String): Int =
+      graph.imm_succs(node).map(succ => Math.max(1, parallel_paths(graph, succ))).sum
+
     def distribute(
       build_uuid: String,
       state: Build_Process.State,
@@ -92,14 +95,23 @@ object Planned_Build {
       build_progress: Progress,
       server: SSH.Server
     ): Build_Process = new Build_Process(context, build_progress, server) {
-      private val previous_results = _build_database.toList.flatMap { db =>
-        val results = Build_Process.private_data.read_results(db)
-        val configs = Planned_Build.private_data.read_configs(db).map(config =>
-          (config.name, config.build_uuid) -> config).toMap
+      private val previous_results =
+        _build_database.toList.flatMap { db =>
+          val results = Build_Process.private_data.read_results(db)
+          val configs = Planned_Build.private_data.read_configs(db).map(config =>
+            (config.name, config.build_uuid) -> config).toMap
 
-        results.values.flatMap(result =>
-          configs.get((result.name, result.build_uuid)).map((_, result.process_result.timing.elapsed)))
-      }
+          results.values.map { result =>
+            val config =
+              configs.get((result.name, result.build_uuid)) match {
+                case Some(config) => config
+                case None =>
+                  val threads = Isabelle_Thread.max_threads()
+                  Config(result.name, result.build_uuid, result.node_info, threads)
+              }
+            (config, result.process_result.timing.elapsed)
+          }
+        }
 
       protected def synchronized_configs[A](label: String)(body: => A): A =
         synchronized {
@@ -266,6 +278,7 @@ object Planned_Build {
       context: Build.Context,
       state: Build_Process.State
     ): List[Config] = {
+      val build_uuid = context.build_uuid
       val ready = ready_jobs(state)
       val free = context.build_hosts.filter(host_configs(state, _).isEmpty)
 
@@ -275,19 +288,18 @@ object Planned_Build {
 
       if (ready.length < free.length)
         ready.zip(free).map((name, host) =>
-          make_config(context.build_uuid, state, name, host, best_threads(name)._1))
+          make_config(build_uuid, state, name, host, best_threads(name)._1))
       else {
-        val best_times = state.sessions.graph.keys.map(name => name -> best_threads(name)._2).toMap
-        val path_time = total_path_time(state.sessions.graph, best_times)
-        val sorted = ready.sortBy(path_time(_).ms)
+        val graph = state.sessions.graph
+        val best_times = graph.keys.map(name => name -> best_threads(name)._2).toMap
+        val path_time = total_path_time(graph, best_times)
 
-        val next =
-          sorted.filter(path_time(_).ms > slow.ms) match {
-            case Nil => sorted.map(_ -> 1)
-            case critical => critical.map(name => name -> best_threads(name)._1)
-          }
+        val (critical, other) = ready.sortBy(path_time(_).ms).partition(path_time(_).ms > slow.ms)
+        val (critical_hosts, other_hosts) =
+          context.build_hosts.splitAt(critical.map(parallel_paths(graph, _)).sum)
 
-        distribute(context.build_uuid, state, context.build_hosts, next)
+        distribute(build_uuid, state, critical_hosts, critical.map(name => name -> best_threads(name)._1)) :::
+          distribute(build_uuid, state, other_hosts, other.map(_ -> 1))
       }
     }
   }
