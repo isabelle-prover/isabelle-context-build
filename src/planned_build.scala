@@ -33,7 +33,7 @@ object Planned_Build {
       state.running.keys.map(_build_configs(_)).toList
 
     def host_configs(state: Build_Process.State, host: Build_Cluster.Host): List[Config] =
-      running_configs(state).filter(_.name == host.name)
+      running_configs(state).filter(_.node.hostname == host.name)
 
     def make_config(
       build_uuid: String,
@@ -321,7 +321,7 @@ object Planned_Build {
         best_result(name, previous).map((config, time) => (config.threads, time)).getOrElse(
           (8, Time.minutes(5)))
 
-      if (ready.length < free.length)
+      if (ready.length <= free.length)
         ready.zip(free).map((name, host) =>
           make_config(build_uuid, state, name, host, best_threads(name)._1))
       else {

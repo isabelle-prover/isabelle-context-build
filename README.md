@@ -13,4 +13,4 @@ Install with: `isabelle components -u <DIR>`. On Windows, use the `Cygwin-Termin
 ## Usage
 `isabelle build -o build_engine=<strategy> -H worker:jobs=<threads>,build_engine=<strategy>` 
 e.g.
-`isabelle build -v -j 0 -o build_engine=timing_heuristic -H localhost:jobs=2,threads=8,build_engine=timing_heuristic HOL`
+`isabelle build -v -j 0 -o build_engine=timing_heuristic -H localhost:jobs=8,build_engine=timing_heuristic HOL`
