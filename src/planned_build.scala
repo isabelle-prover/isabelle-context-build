@@ -91,25 +91,59 @@ object Planned_Build {
     }
 
     override def open_build_process(
-      context: Build.Context,
+      build_context: Build.Context,
       build_progress: Progress,
       server: SSH.Server
-    ): Build_Process = new Build_Process(context, build_progress, server) {
+    ): Build_Process = new Build_Process(build_context, build_progress, server) {
+      /* global resources with common close() operation */
+
+      private val _database_server: Option[SQL.Database] =
+        try { store.maybe_open_database_server(server = this.server) }
+        catch { case exn: Throwable => close(); throw exn }
+
+      private val _build_database: Option[SQL.Database] =
+        try {
+          for (db <- store.maybe_open_build_database(server = this.server)) yield {
+            val store_tables = db.is_postgresql
+            Build_Process.private_data.transaction_lock(db,
+              create = true,
+              label = "Build_Process.build_database"
+            ) {
+              Build_Process.private_data.clean_build(db)
+              if (store_tables) Store.private_data.tables.lock(db, create = true)
+            }
+            if (this.build_context.master) {
+              db.vacuum(Build_Process.private_data.tables.list)
+              if (store_tables) db.vacuum(Store.private_data.tables.list)
+            }
+            db
+          }
+        }
+        catch { case exn: Throwable => close(); throw exn }
+
+      override def close(): Unit = {
+        super.close()
+        Option(_database_server).flatten.foreach(_.close())
+        Option(_build_database).flatten.foreach(_.close())
+      }
+
       private val previous_results =
         _build_database.toList.flatMap { db =>
-          val results = Build_Process.private_data.read_results(db)
-          val configs = Planned_Build.private_data.read_configs(db).map(config =>
-            (config.name, config.build_uuid) -> config).toMap
+          private_data.transaction_lock(db, create = true, label = "Planned_Build.previous_builds") {
+            val results = Build_Process.private_data.read_results(db)
+            val configs = private_data.read_configs(db).map(config =>
+              (config.name, config.build_uuid) -> config).toMap
 
-          results.values.map { result =>
-            val config =
-              configs.get((result.name, result.build_uuid)) match {
-                case Some(config) => config
-                case None =>
-                  val threads = Isabelle_Thread.max_threads()
-                  Config(result.name, result.build_uuid, result.node_info, threads)
-              }
-            (config, result.process_result.timing.elapsed)
+            results.values.map { result =>
+              val config =
+                configs.get((result.name, result.build_uuid)) match {
+                  case Some(config) => config
+                  case None =>
+                    val threads = Isabelle_Thread.max_threads()
+                    Config(result.name, result.build_uuid, result.node_info, threads)
+                }
+              (config, result.process_result.timing.elapsed)
+            }
           }
         }
 
@@ -118,11 +152,11 @@ object Planned_Build {
           _build_database match {
             case None => body
             case Some(db) =>
-              Planned_Build.private_data.transaction_lock(db, label = label) {
-                _build_configs = Planned_Build.private_data.read_configs(db, context.build_uuid)
+              private_data.transaction_lock(db, label = label) {
+                _build_configs = private_data.read_configs(db, this.build_context.build_uuid)
                   .map(config => config.name -> config).toMap
                 val res = body
-                Planned_Build.private_data.update_configs(db, context.build_uuid, _build_configs)
+                private_data.update_configs(db, this.build_context.build_uuid, _build_configs)
                 res
               }
           }
@@ -130,8 +164,8 @@ object Planned_Build {
 
       override protected def next_jobs(state: Build_Process.State): List[String] =
         synchronized_configs("next_jobs") {
-          if (context.master) {
-            val next_builds = next(previous_results, context, state)
+          if (this.build_context.master) {
+            val next_builds = next(previous_results, this.build_context, state)
             _build_configs ++= next_builds.map(config => config.name -> config)
             next_builds.map(_.name)
           } else {
@@ -146,7 +180,7 @@ object Planned_Build {
         state: Build_Process.State,
         session_name: String
       ): Build_Process.State = {
-        val build_uuid = context.build_uuid
+        val build_uuid = this.build_context.build_uuid
         val ancestor_results =
           for (a <- state.sessions(session_name).ancestors) yield state.results(a)
 
@@ -157,20 +191,20 @@ object Planned_Build {
           else SHA1.flat_shasum(ancestor_results.map(_.output_shasum))
 
         val store_heap =
-          build_context.build_heap || Sessions.is_pure(session_name) ||
+          this.build_context.build_heap || Sessions.is_pure(session_name) ||
             state.sessions.iterator.exists(_.ancestors.contains(session_name))
 
         val (current, output_shasum) =
           store.check_output(
             _database_server, session_name,
-            session_options = build_context.sessions_structure(session_name).options,
+            session_options = this.build_context.sessions_structure(session_name).options,
             sources_shasum = sources_shasum,
             input_shasum = input_shasum,
-            fresh_build = build_context.fresh_build,
+            fresh_build = this.build_context.fresh_build,
             store_heap = store_heap)
 
         val finished = current && ancestor_results.forall(_.current)
-        val skipped = build_context.no_build
+        val skipped = this.build_context.no_build
         val cancelled = progress.stopped || !ancestor_results.forall(_.ok)
 
         if (!skipped && !cancelled) {
@@ -210,7 +244,7 @@ object Planned_Build {
 
           val build =
             Build_Job.start_session(
-              build_context, session, progress, log, this.server,
+              this.build_context, session, progress, log, this.server,
               build_deps
                 .background(session_name), sources_shasum, input_shasum, node_info, store_heap)
 
@@ -280,7 +314,8 @@ object Planned_Build {
     ): List[Config] = {
       val build_uuid = context.build_uuid
       val ready = ready_jobs(state)
-      val free = context.build_hosts.filter(host_configs(state, _).isEmpty)
+      val free =
+        context.build_hosts.filter(host => host.jobs > 0 && host_configs(state, host).isEmpty)
 
       def best_threads(name: String): (Int, Time) =
         best_result(name, previous).map((config, time) => (config.threads, time)).getOrElse(
