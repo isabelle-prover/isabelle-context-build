@@ -1,16 +1,14 @@
-# Isabelle Context Build
+# Isabelle Planned Build
 ![status](https://github.com/isabelle-prover/isabelle-context-build/actions/workflows/build.yml/badge.svg)
-Build tool for Isabelle, with additional execution context (e.g., for distributed builds).
+Build engine for Isabelle for pre-planned builds.
 
 ## Setup
 Install with: `isabelle components -u <DIR>`. On Windows, use the `Cygwin-Terminal`.
 
+## Available Build Strategies
+- `timing_heuristic`: Paths taking longer than 30 minutes (assuming optimal run-time) are built fast, 
+  then sessions in short paths are built as parallel as possible until available hosts exceeds jobs.
+  At that point, the remaining sessions are built one per host as fast as possible.
+
 ## Usage
-`isabelle context_build -?` (nearly regular build options)
-
-## Distributed Build
-Distributed builds are implemented for slurm clusters.
-
-Infrastructure Assumptions:
-- shared files system for Isabelle and user home (mounted on same paths), writeable by all nodes
-- slurm partitions of homogeneous nodes 
+`isabelle build -E <strategy>`
