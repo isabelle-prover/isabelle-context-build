@@ -169,7 +169,7 @@ object Planned_Build {
           if (this.build_context.master) {
             val next_builds = next(previous_results, this.build_context, state)
             _build_configs ++= next_builds.map(config => config.name -> config)
-            next_builds.map(_.name)
+            next_builds.filter(_.node.hostname == hostname).map(_.name)
           } else {
             state.pending
               .filter(entry => entry.is_ready && !state.is_running(entry.name))
