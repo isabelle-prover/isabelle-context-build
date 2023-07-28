@@ -183,8 +183,8 @@ object Planned_Build {
         session_name: String
       ): Build_Process.State = {
         val build_uuid = this.build_context.build_uuid
-        val ancestor_results =
-          for (a <- state.sessions(session_name).ancestors) yield state.results(a)
+        val ancestors = state.sessions(session_name).ancestors
+        val ancestor_results = ancestors.map(state.results)
 
         val sources_shasum = state.sessions(session_name).sources_shasum
 
@@ -210,9 +210,10 @@ object Planned_Build {
         val cancelled = progress.stopped || !ancestor_results.forall(_.ok)
 
         if (!skipped && !cancelled) {
-          ML_Heap.restore(
-            _database_server, session_name, store.output_heap(session_name),
-            cache = store.cache.compress)
+          ancestors.foreach(session_name =>
+            ML_Heap.restore(
+              _database_server, session_name, store.output_heap(session_name),
+              cache = store.cache.compress))
         }
 
         val result_name = (session_name, worker_uuid, build_uuid)
