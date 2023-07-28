@@ -37,14 +37,11 @@ object Planned_Build {
 
     def make_config(
       build_uuid: String,
-      state: Build_Process.State,
       name: String,
       host: Build_Cluster.Host,
+      job_id: Int,
       threads: Int
-    ): Config = {
-      val numa_ident = Some(-(host_configs(state, host).length + 1))
-      Config(name, build_uuid, node = Host.Node_Info(host.name, numa_ident), threads)
-    }
+    ): Config = Config(name, build_uuid, node = Host.Node_Info(host.name, Some(job_id)), threads)
 
     def total_path_time(graph: Graph[String, _], node_time: Map[String, Time]): Map[String, Time] = {
       val accumulated = graph.node_depth(node_time(_).ms).filter((name, _) => graph.is_maximal(name))
@@ -62,15 +59,20 @@ object Planned_Build {
     ): List[Config] =
       hosts match {
         case host :: hosts =>
-          val capacity = host.jobs - host_configs(state, host).length
+          val running = host_configs(state, host)
+          val num_jobs = running.length
+          val max_jobs = host.jobs
+          val num_threads = running.map(_.threads).sum
+          val max_threads = Options.init(specs = host.options).int("threads")
 
-          val (_, configs, rest) =
-            jobs.foldLeft((capacity, List.empty[Config], List.empty[(String, Int)])) {
-              case ((capacity, configs, jobs), (name, threads)) =>
-                if (capacity < threads) (capacity, configs, jobs :+ (name, threads))
+          val (_, _, configs, rest) =
+            jobs.foldLeft((num_jobs, num_threads, List.empty[Config], List.empty[(String, Int)])) {
+              case ((num_jobs, num_threads, configs, jobs), (name, threads)) =>
+                if (max_jobs <= num_jobs || max_threads <= num_threads + threads)
+                  (num_jobs, num_threads, configs, jobs :+ (name, threads))
                 else {
-                  val config = make_config(build_uuid, state, name, host, threads)
-                  (capacity - threads, config :: configs, jobs)
+                  val config = make_config(build_uuid, name, host, -(num_jobs + 1), threads)
+                  (num_jobs + 1, num_threads + threads, config :: configs, jobs)
                 }
             }
 
@@ -322,8 +324,10 @@ object Planned_Build {
           (8, Time.minutes(5)))
 
       if (ready.length <= free.length)
-        ready.zip(free).map((name, host) =>
-          make_config(build_uuid, state, name, host, best_threads(name)._1))
+        ready.zip(free).map { (name, host) =>
+          val job_id = -(host_configs(state, host).length + 1)
+          make_config(build_uuid, name, host, job_id, best_threads(name)._1)
+        }
       else {
         val graph = state.sessions.graph
         val best_times = graph.keys.map(name => name -> best_threads(name)._2).toMap
